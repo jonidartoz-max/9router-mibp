@@ -40,7 +40,7 @@ export {
   classifyOAuthRefreshError,
 };
 
-export const TOKEN_EXPIRY_BUFFER_MS=***
+export const TOKEN_EXPIRY_BUFFER_MS = 120000;
 
 export function isUnrecoverableRefreshError(result) {
   return (
