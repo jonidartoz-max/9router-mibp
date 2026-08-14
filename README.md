@@ -1,3 +1,5 @@
+> **🚀 LIVE on Railway** — auto-deploy from this repo
+
 # 9Router - FREE AI Router & Token Saver
 
 9Router is a local AI routing gateway with provider fallback and token-saving features.
