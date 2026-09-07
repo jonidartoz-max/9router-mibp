@@ -139,6 +139,8 @@ export class BaseExecutor {
 
       try {
         const bodyStr = JSON.stringify(transformedBody);
+        const fetchT0 = Date.now();
+        dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | connectTimeout=${timeoutMs}ms`);
         const response = await proxyAwareFetch(url, {
           method: "POST",
           headers,
@@ -146,6 +148,9 @@ export class BaseExecutor {
           signal: mergedSignal
         }, proxyOptions);
         clearTimeout(connectTimer);
+        const ct = response.headers?.get?.("content-type") || "";
+        const cl = response.headers?.get?.("content-length") || "?";
+        dbg("FETCH", `${this.provider.toUpperCase()} ← ${response.status} | ttft=${Date.now() - fetchT0}ms | ct=${ct} | cl=${cl}`);
 
         if (await tryRetry(urlIndex, response.status, `status ${response.status}`, response)) { urlIndex--; continue; }
 

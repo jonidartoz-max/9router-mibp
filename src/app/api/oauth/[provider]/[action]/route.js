@@ -215,7 +215,6 @@ export async function GET(request, { params }) {
         "codebuddy-intl",
         "qoder",
         "grok-cli",
-        "freebuff",
       ];
       let deviceData;
       if (noPkceDeviceProviders.includes(provider)) {

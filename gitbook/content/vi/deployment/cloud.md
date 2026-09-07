@@ -247,10 +247,6 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
-    # Cho phép body lớn — prompt ngữ cảnh 1M token sinh payload vài MB;
-    # mặc định nginx là 1m và sẽ trả 413.
-    client_max_body_size 128m;
-
     # Proxy to 9Router
     location / {
         proxy_pass http://localhost:3000;

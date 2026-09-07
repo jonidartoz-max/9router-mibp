@@ -247,10 +247,6 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
 
-    # Allow large request bodies — big context windows (e.g. 1M token prompts)
-    # produce multi-MB chat payloads; nginx default is 1m and would 413 them.
-    client_max_body_size 128m;
-
     # Proxy to 9Router
     location / {
         proxy_pass http://localhost:3000;

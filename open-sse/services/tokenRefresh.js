@@ -4,6 +4,7 @@ import {
   refreshXaiToken,
   refreshAccessToken,
   refreshKimiToken,
+  refreshClineToken,
   refreshClaudeOAuthToken,
   refreshGoogleToken,
   refreshCodexToken,
@@ -24,6 +25,7 @@ import {
 export {
   refreshAccessToken,
   refreshKimiToken,
+  refreshClineToken,
   refreshClaudeOAuthToken,
   refreshGoogleToken,
   refreshCodexToken,
@@ -36,11 +38,10 @@ export {
   refreshTraeToken,
   refreshZedToken,
   refreshWindsurfToken,
-  refreshZaiToken,
   classifyOAuthRefreshError,
 };
 
-export const TOKEN_EXPIRY_BUFFER_MS = 120000;
+export const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000;
 
 export function isUnrecoverableRefreshError(result) {
   return (
@@ -147,6 +148,7 @@ const REFRESH_HANDLERS = {
   "codebuddy-cn": (c, log) => refreshCodebuddyToken(c.refreshToken, log),
   "codebuddy-intl": (c, log) => refreshCodebuddyIntlToken(c.refreshToken, log),
   trae: (c, log) => refreshTraeToken(c.refreshToken, c, log),
+  cline: (c, log) => refreshClineToken(c.refreshToken, log),
   zed: () => refreshZedToken(),
   windsurf: (c, log) => refreshWindsurfToken(c, log),
   zai: () => refreshZaiToken(),

@@ -1,6 +1,6 @@
 services:
   9router:
-    image: mhiqrambhrng/9router-mibp-version:latest
+    image: decolua/9router:latest
     container_name: 9router
     restart: always
     ports:

@@ -69,14 +69,7 @@ export async function parseUpstreamError(response, executor = null) {
       const parsed = executor.parseError(response, bodyText);
       if (parsed && typeof parsed === "object") {
         const msg = parsed.message || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
-        return {
-          statusCode: parsed.status || response.status,
-          message: msg,
-          resetsAtMs: parsed.resetsAtMs,
-          // Executors declare IP/pool-scoped failures (e.g. per-IP rate limits)
-          // here; chatCore completes poolId/scope and retries via another pool.
-          poolScoped: parsed.poolScoped,
-        };
+        return { statusCode: parsed.status || response.status, message: msg, resetsAtMs: parsed.resetsAtMs };
       }
     } catch { /* fall through to default parsing */ }
   }

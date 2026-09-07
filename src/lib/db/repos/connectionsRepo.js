@@ -8,7 +8,6 @@ const OPTIONAL_FIELDS = [
   "scope", "projectId", "apiKey", "testStatus",
   "lastTested", "lastError", "lastErrorAt", "rateLimitedUntil", "expiresIn", "errorCode",
   "consecutiveUseCount", "idToken", "lastRefreshAt",
-  "proxyRotationStrategy", "proxyPoolIds",
 ];
 
 function rowToConn(row) {

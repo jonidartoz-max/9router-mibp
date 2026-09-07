@@ -2,13 +2,15 @@
 ARG NODE_IMAGE=node:22-alpine
 FROM ${NODE_IMAGE} AS base
 WORKDIR /app
+# CN mirror for apk (used by builder and runner stages)
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
 
 FROM base AS builder
 
 RUN apk --no-cache upgrade && apk --no-cache add python3 make g++ linux-headers
 
-COPY package.json package-lock.json ./
-RUN npm ci
+COPY package.json ./
+RUN npm install --registry=https://registry.npmmirror.com
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -36,6 +38,11 @@ COPY --from=builder /app/src/mitm ./src/mitm
 COPY --from=builder /app/node_modules/node-forge ./node_modules/node-forge
 # Ensure `next` is available at runtime in case tracing did not include it.
 COPY --from=builder /app/node_modules/next ./node_modules/next
+# sql.js loads dist/sql-wasm.wasm by path at runtime; tracing only follows JS imports,
+# so the last-resort DB driver would abort with ENOENT on the missing binary.
+COPY --from=builder /app/node_modules/sql.js ./node_modules/sql.js
+# node-machine-id is createRequire-loaded at runtime; tracing omits it.
+COPY --from=builder /app/node_modules/node-machine-id ./node_modules/node-machine-id
 
 RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \
@@ -47,10 +54,6 @@ RUN apk --no-cache upgrade && apk --no-cache add su-exec && \
   chmod +x /entrypoint.sh
 
 EXPOSE 20128
-
-# Health: Next serves /api/health (dashboardGuard public path).
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:20128/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "custom-server.js"]

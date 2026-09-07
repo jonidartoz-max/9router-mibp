@@ -77,7 +77,7 @@ const LIVE_MODEL_RESOLVERS = {
     return result?.models?.length ? { models: result.models } : null;
   },
   "grok-cli": async (conn) => {
-        const proxy = await resolveConnectionProxyConfig(conn.providerSpecificData || {}, conn.id);
+    const proxy = await resolveConnectionProxyConfig(conn.providerSpecificData || {});
     const result = await resolveGrokCliModels({
       ...conn,
       connectionId: conn.id,
@@ -485,10 +485,27 @@ export async function buildModelsList(kindFilter, options = {}) {
           || capabilitiesFromServiceKind(customKind || liveKind)
           || (kind === LLM_KIND ? getCapabilitiesForModel(providerId, modelId) : null);
         if (caps) model.capabilities = caps;
-        // Advertise the context window for clients that read it from /v1/models
-        // (OpenAI-compatible convention; opencode's generic adapter ignores it
-        // and needs limit.context declared client-side).
-        if (caps?.contextWindow) model.context_window = caps.contextWindow;
+        // Token limits under the snake_case names the OpenAI/OpenRouter
+        // convention uses. `capabilities.contextWindow` is camelCase and nested,
+        // so clients matching context_length find nothing, fall back to guessing
+        // the window from the model name, and guess high — a 372k model read as
+        // 1.05M never reaches its compaction threshold and hard-fails upstream.
+        // Emitted at top level because not every client recurses into nested
+        // objects; the camelCase `capabilities` block stays for compatibility.
+        if (kind === LLM_KIND || allowAsLlm) {
+          let contextWindow = caps?.contextWindow;
+          let maxOutput = caps?.maxOutput;
+          // Live-catalog and service-kind capabilities are usually partial
+          // (often just { tools: true }), so fill the gaps from the static
+          // table rather than emitting null and leaving clients to guess.
+          if (!Number.isFinite(contextWindow) || !Number.isFinite(maxOutput)) {
+            const fallback = getCapabilitiesForModel(providerId, modelId);
+            if (!Number.isFinite(contextWindow)) contextWindow = fallback.contextWindow;
+            if (!Number.isFinite(maxOutput)) maxOutput = fallback.maxOutput;
+          }
+          if (Number.isFinite(contextWindow)) model.context_length = contextWindow;
+          if (Number.isFinite(maxOutput)) model.max_completion_tokens = maxOutput;
+        }
         models.push(model);
       }
 

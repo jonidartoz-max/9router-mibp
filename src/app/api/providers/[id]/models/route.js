@@ -391,7 +391,7 @@ const PROVIDER_MODELS_CONFIG = {
   },
   "grok-cli": {
     customResolver: async (connection) => {
-      const proxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {}, connection.id);
+      const proxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
       const result = await resolveGrokCliModels({
         ...connection,
         connectionId: connection.id,

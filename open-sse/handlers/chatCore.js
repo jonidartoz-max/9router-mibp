@@ -2,11 +2,11 @@ import { detectFormat, getTargetFormat, resolveTransport } from "../services/pro
 import { translateRequest } from "../translator/index.js";
 import { applyThinking, extractThinking, stripThinkingSuffix } from "../translator/concerns/thinkingUnified.js";
 import { FORMATS } from "../translator/formats.js";
-import { normalizeClaudePassthrough } from "../translator/formats/claude.js";
+import { normalizeClaudePassthrough, anchorClaudeCache } from "../translator/formats/claude.js";
 import { createStreamController } from "../utils/streamHandler.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { createRequestLogger } from "../utils/requestLogger.js";
-import { getModelTargetFormat, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
+import { getModelTargetFormat, getModelSupportedFormats, getModelStrip, getModelUpstreamId, getModelType, PROVIDER_ID_TO_ALIAS } from "../config/providerModels.js";
 import { PROVIDERS } from "../config/providers.js";
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
 import { HTTP_STATUS, TOKEN_SAVER_HEADER } from "../config/runtimeConfig.js";
@@ -28,13 +28,8 @@ import { compressWithPxpipe } from "../rtk/pxpipe.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
+import { defaultClaudeToolType } from "../translator/concerns/toolCall.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
-import { markPoolUnfit, clearPoolUnfit } from "../services/proxyPoolFitness.js";
-
-// Pool-scoped failure retry: when an executor tags an error as belonging to a
-// proxy pool (region gate, dead proxy, …), re-resolve the proxy config
-// excluding that pool and retry instead of failing the whole account.
-const MAX_POOL_RETRIES = 2;
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -63,7 +58,7 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, resolveProxyConfig }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -84,10 +79,25 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   const alias = PROVIDER_ID_TO_ALIAS[provider] || provider;
   const modelTargetFormat = getModelTargetFormat(alias, model);
-  // Multi-endpoint providers: pick transport matching sourceFormat → zero translation
+  // Multi-endpoint providers: pick transport matching sourceFormat → zero translation.
+  // Per-model guard: only use the transport when the model declares support for that
+  // sourceFormat — opencode-go models differ in endpoint support (kimi/glm only do
+  // /chat/completions), so without this guard a claude-format request would wrongly
+  // route kimi to /messages.
+  const modelSupportedFormats = getModelSupportedFormats(alias, model);
   const runtimeTransport = resolveTransport(provider, sourceFormat);
-  const targetFormat = modelTargetFormat || runtimeTransport?.format || getTargetFormat(provider, credentials);
-  if (runtimeTransport && credentials) credentials.runtimeTransport = runtimeTransport;
+  // Per-model guard: when a model declares supportedFormats, only use the
+  // sourceFormat-matched transport if that format is declared (opencode-go models
+  // differ — kimi/glm only do /chat/completions). Undeclared models keep the
+  // upstream default (use the transport), preserving behavior for glm/deepseek/...
+  const useTransport = (!modelSupportedFormats || modelSupportedFormats.includes(sourceFormat)) ? runtimeTransport : null;
+  // A source-format-matched endpoint keeps the request lossless. Prefer it
+  // over a model-level targetFormat, which is only the fallback for clients
+  // whose wire format has no supported transport (for example MiniMax-M3:
+  // OpenAI clients should stay on /chat/completions; other clients can fall
+  // back to its declared Claude target).
+  const targetFormat = useTransport?.format || modelTargetFormat || getTargetFormat(provider, credentials);
+  if (useTransport && credentials) credentials.runtimeTransport = useTransport;
   const stripList = getModelStrip(alias, model);
   const upstreamModel = getModelUpstreamId(alias, model);
 
@@ -231,6 +241,12 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     delete translatedBody.tools;
   }
 
+  // Claude tool schema requires `type` to be explicitly set; strict gateways (e.g., MiniMax)
+  // reject legacy payloads that omit it with HTTP 400. Default to "custom" when missing.
+  if (finalFormat === FORMATS.CLAUDE && Array.isArray(translatedBody.tools)) {
+    translatedBody.tools = defaultClaudeToolType(translatedBody.tools);
+  }
+
   // Per-request opt-out: client can bypass all token savers via header
   const tokenSaverEnabled = clientRawRequest?.headers?.[TOKEN_SAVER_HEADER]?.toLowerCase() !== "off";
 
@@ -241,7 +257,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Headroom: optional external proxy compression; fail open if proxy is absent.
   const headroomDiagnostics = {};
-  const headroomStats = await compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, diagnostics: headroomDiagnostics });
+  const headroomStats = await compressWithHeadroom(translatedBody, { enabled: tokenSaverEnabled && headroomEnabled, url: headroomUrl, model: upstreamModel, format: finalFormat, compressUserMessages: headroomCompressUserMessages, timeoutMs: headroomTimeoutMs, diagnostics: headroomDiagnostics });
   const headroomLine = formatHeadroomLog(headroomStats);
   const headroomSizeLine = formatHeadroomSizeLog(headroomDiagnostics);
   if (headroomLine) {
@@ -281,6 +297,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   if (xf.length && log?.line) log.line(reqTag, "⚙", xf.join(" · "));
 
+  // Pin cache breakpoints to the final body — every saver above can reshape
+  // system/tools/messages, and a stale anchor costs a full prefix rewrite.
+  if (passthrough && clientTool === "claude") anchorClaudeCache(translatedBody);
+
   const executor = getExecutor(provider);
   trackPendingRequest(model, provider, connectionId, true);
   appendRequestLog({ model, provider, connectionId, status: "PENDING" }).catch(() => { });
@@ -297,23 +317,16 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     log, provider, model, reqTag
   });
 
-  // Build proxy options from the resolved provider-specific data. `strictProxy`
-  // is forced for freebuff so a dead/limited pool can never leak the request
-  // to the caller's real IP (the freebuff session tier is per-egress-IP).
-  const buildProxyOptions = (psd = {}) => ({
-    connectionProxyEnabled: psd?.connectionProxyEnabled === true,
-    connectionProxyUrl: psd?.connectionProxyUrl || "",
-    connectionNoProxy: psd?.connectionNoProxy || "",
-    vercelRelayUrl: psd?.vercelRelayUrl || "",
-    strictProxy: psd?.strictProxy === true || provider === "freebuff",
-    proxyPoolId: psd?.proxyPoolId || psd?.connectionProxyPoolId || null,
-  });
-
-  let proxyOptions = buildProxyOptions(credentials?.providerSpecificData || {});
+  const proxyOptions = {
+    connectionProxyEnabled: credentials?.providerSpecificData?.connectionProxyEnabled === true,
+    connectionProxyUrl: credentials?.providerSpecificData?.connectionProxyUrl || "",
+    connectionNoProxy: credentials?.providerSpecificData?.connectionNoProxy || "",
+    vercelRelayUrl: credentials?.providerSpecificData?.vercelRelayUrl || "",
+  };
 
   if (proxyOptions.vercelRelayUrl) {
     const connectionName = credentials?.connectionName || credentials?.connectionId || "unknown";
-    const poolId = proxyOptions.proxyPoolId || "none";
+    const poolId = credentials?.providerSpecificData?.connectionProxyPoolId || "none";
     log?.info?.("PROXY", `${provider.toUpperCase()} | ${model} | conn=${connectionName} | pool=${poolId} | vercel-relay=${proxyOptions.vercelRelayUrl}`);
   } else if (proxyOptions.connectionProxyEnabled && proxyOptions.connectionProxyUrl) {
     let maskedProxyUrl = proxyOptions.connectionProxyUrl;
@@ -327,7 +340,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       // Keep raw if URL parsing fails
     }
 
-    const poolId = proxyOptions.proxyPoolId || "none";
+    const poolId = credentials?.providerSpecificData?.connectionProxyPoolId || "none";
     const connectionName = credentials?.connectionName || credentials?.connectionId || "unknown";
     log?.info?.("PROXY", `${provider.toUpperCase()} | ${model} | conn=${connectionName} | pool=${poolId} | url=${maskedProxyUrl}`);
   }
@@ -337,65 +350,23 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     log?.debug?.("PROXY", `${provider.toUpperCase()} | ${model} | conn=${connectionName} | no_proxy=${proxyOptions.connectionNoProxy}`);
   }
 
-  // Execute request — with pool-scoped retry: a failed pool (region gate,
-  // per-IP limit, dead proxy) is marked unfit and the request retried via
-  // another pool instead of failing the account. Covers both thrown errors
-  // (executor.execute) and non-ok responses declared poolScoped via
-  // parseError — poolId/scope are completed here from proxyOptions.
-  const proxyScope = `${provider}::${model}`;
-  let parsedNonOk = null;
-
-  const tryNextPool = async (poolScoped, reasonMsg) => {
-    const failed = {
-      poolId: poolScoped?.poolId || proxyOptions.proxyPoolId || null,
-      scope: poolScoped?.scope || proxyScope,
-      reason: poolScoped?.reason || "pool-scoped",
-    };
-    markPoolUnfit(failed.poolId, failed.scope, undefined, failed.reason);
-    log?.warn?.("PROXY", `${provider.toUpperCase()} | pool ${failed.poolId || "?"} unfit for ${failed.scope} (${failed.reason}) — retry with another pool. ${reasonMsg || ""}`);
-    try {
-      const resolved = await resolveProxyConfig(credentials, [failed.poolId]);
-      if (resolved?.proxyPoolId) {
-        credentials.providerSpecificData = { ...(credentials.providerSpecificData || {}), ...resolved };
-        proxyOptions = buildProxyOptions(credentials.providerSpecificData);
-        return true;
-      }
-    } catch (resolverError) {
-      // A resolver failure must not mask the original pool error.
-      log?.warn?.("PROXY", `${provider.toUpperCase()} | pool re-resolve failed: ${resolverError.message}`);
-    }
-    return false;
-  };
-
-  const executeWithPoolFallback = async (attempt = 0) => {
-    let result;
-    try {
-      result = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
-    } catch (error) {
-      if (error?.poolScoped && typeof resolveProxyConfig === "function" && attempt < MAX_POOL_RETRIES) {
-        if (await tryNextPool(error.poolScoped, error.message)) return executeWithPoolFallback(attempt + 1);
-      }
-      throw error;
-    }
-    // Non-ok response that the executor declared pool/IP-scoped (e.g. opencode
-    // free per-IP limit) — parse once, retry via another pool when possible.
-    if (!result.response.ok) {
-      const parsed = await parseUpstreamError(result.response, executor);
-      if (parsed.poolScoped && typeof resolveProxyConfig === "function" && attempt < MAX_POOL_RETRIES) {
-        if (await tryNextPool(parsed.poolScoped, parsed.message)) return executeWithPoolFallback(attempt + 1);
-      }
-      parsedNonOk = parsed;
-    }
-    return result;
-  };
-
   // Execute request
   let providerResponse, providerUrl, providerHeaders, finalBody;
   // Most executors return their registry format. Cursor AgentService is an
   // exception: it is decoded by the executor into OpenAI-compatible output.
   let providerResponseFormat = targetFormat;
   try {
-    const result = await executeWithPoolFallback();
+    const result = await executor.execute({
+      model,
+      body: translatedBody,
+      stream,
+      credentials,
+      providerSessionId: sessionSeed,
+      clientTool,
+      signal: streamController.signal,
+      log,
+      proxyOptions,
+    });
     providerResponse = result.response;
     providerUrl = result.url;
     providerHeaders = result.headers;
@@ -422,9 +393,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     }
     const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
     if (log?.errorLine) {
-      log.errorLine(reqTag, "✗", `ERROR 502 · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    ${errMsg}`);
+      log.errorLine(reqTag, "✗", `ERROR 502 · ${provider}/${model} · ${Date.now() - requestStartTime}ms\n    ${errMsg}${error.stack ? `\n    ${error.stack}` : ""}`);
     }
-    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg, error?.resetsAtMs || undefined);
+    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
   }
 
   // Handle 401/403 - try token refresh (skip for noAuth providers)
@@ -449,7 +420,17 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
           try { await onCredentialsRefreshed(newCredentials); } catch (e) { log?.warn?.("TOKEN", `onCredentialsRefreshed failed: ${e.message}`); }
         }
         try {
-          const retryResult = await executor.execute({ model, body: translatedBody, stream, credentials, signal: streamController.signal, log, proxyOptions });
+          const retryResult = await executor.execute({
+            model,
+            body: translatedBody,
+            stream,
+            credentials,
+            providerSessionId: sessionSeed,
+            clientTool,
+            signal: streamController.signal,
+            log,
+            proxyOptions,
+          });
           if (retryResult.response.ok) {
             providerResponse = retryResult.response;
             providerUrl = retryResult.url;
@@ -467,7 +448,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Provider returned error
   if (!providerResponse.ok) {
     trackPendingRequest(model, provider, connectionId, false, true);
-    const { statusCode, message, resetsAtMs } = parsedNonOk || await parseUpstreamError(providerResponse, executor);
+    const { statusCode, message, resetsAtMs } = await parseUpstreamError(providerResponse, executor);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${statusCode}` }).catch(() => { });
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
@@ -508,7 +489,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
 
   // Streaming response
   const { onStreamComplete, streamDetailId } = buildOnStreamComplete({ ...sharedCtx });
-  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId });
+  return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, credentials });
 }
 
 export function isTokenExpiringSoon(expiresAt, bufferMs = 5 * 60 * 1000) {

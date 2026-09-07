@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { createProxyPool, getProviderConnections, getProxyPools } from "@/models";
-import { getPoolGeo } from "open-sse/services/poolGeo.js";
 
 function toBoolean(value) {
   if (value === "true") return true;
@@ -66,8 +65,6 @@ export async function GET(request) {
     const enrichedProxyPools = proxyPools.map((pool) => ({
       ...pool,
       boundConnectionCount: usageMap.get(pool.id) || 0,
-      // Egress geo from the background probe cache (null until first probe).
-      egress: getPoolGeo(pool.id) || null,
     }));
 
     return NextResponse.json({ proxyPools: enrichedProxyPools });

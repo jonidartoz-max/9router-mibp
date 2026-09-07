@@ -20,8 +20,7 @@ import {
   formatProviderCredentials as _formatProviderCredentials,
   getAllAccessTokens as _getAllAccessTokens,
   refreshKiroToken as _refreshKiroToken,
-  getRefreshLeadMs as _getRefreshLeadMs,
-  isUnrecoverableRefreshError,
+  getRefreshLeadMs as _getRefreshLeadMs
 } from "open-sse/services/tokenRefresh.js";
 import {
   refreshProviderCredentials as _refreshProviderCredentials,
@@ -125,25 +124,30 @@ function needsProjectId(provider) {
 function _refreshProjectId(provider, connectionId, accessToken) {
   if (!needsProjectId(provider) || !connectionId || !accessToken) return;
 
-  // Evict the stale cached entry so getProjectIdForConnection does a real fetch
+  // Invalidate the stale cached entry so getProjectIdForConnection does a real fetch
   invalidateProjectId(connectionId);
 
-  getProjectIdForConnection(connectionId, accessToken)
-    .then((projectId) => {
-      if (!projectId) return;
-      updateProviderCredentials(connectionId, { projectId }).catch((err) => {
-        log.debug("TOKEN_REFRESH", "Failed to persist refreshed projectId", {
+  // Lazy resolution: Do not eagerly trigger onboardUser during background token refresh.
+  // Eagerly fetching projectId across multiple accounts simultaneously triggers Google Cloud anti-abuse / rate limits.
+  // Runtime handlers (e.g. chat handler) will lazily call getProjectIdForConnection() on demand.
+  if (process.env.EAGER_PROJECT_ID_REFRESH === "true") {
+    getProjectIdForConnection(connectionId, accessToken, provider)
+      .then((projectId) => {
+        if (!projectId) return;
+        updateProviderCredentials(connectionId, { projectId }).catch((err) => {
+          log.debug("TOKEN_REFRESH", "Failed to persist refreshed projectId", {
+            connectionId,
+            error: err?.message ?? err,
+          });
+        });
+      })
+      .catch((err) => {
+        log.debug("TOKEN_REFRESH", "Failed to fetch projectId after token refresh", {
           connectionId,
           error: err?.message ?? err,
         });
       });
-    })
-    .catch((err) => {
-      log.debug("TOKEN_REFRESH", "Failed to fetch projectId after token refresh", {
-        connectionId,
-        error: err?.message ?? err,
-      });
-    });
+  }
 }
 
 // ─── Local-specific: persist credentials to localDb ──────────────────────────
@@ -239,26 +243,10 @@ export async function checkAndRefreshToken(provider, credentials, options = {}) 
     });
 
     const newCreds = await _refreshProviderCredentials(provider, creds, log);
-    if (isUnrecoverableRefreshError(newCreds)) {
-      // Refresh token is dead (revoked/reused/expired) — retrying forever just
-      // spams xAI's endpoint every tick. Tag the result so the background
-      // scheduler can stop retrying and surface "re-login required".
-      log.warn("TOKEN_REFRESH", `Refresh token unrecoverable for ${provider} — re-login required`, {
-        error: newCreds.error,
-      });
-      return { ...creds, refreshError: newCreds.error, refreshErrorAt: new Date().toISOString() };
-    }
     if (newCreds?.accessToken || newCreds?.apiKey || newCreds?.copilotToken) {
       const mergedCreds = {
         ...newCreds,
-        // Lift any previous refreshBlocked marker — the refresh just succeeded
-        // (covers in-place re-auth flows that keep the same connection row).
-        existingProviderSpecificData: {
-          ...(creds.providerSpecificData || {}),
-          ...(creds.providerSpecificData?.refreshBlocked
-            ? { refreshBlocked: undefined, refreshBlockedAt: undefined }
-            : {}),
-        },
+        existingProviderSpecificData: creds.providerSpecificData,
       };
 
       // Persist to DB (non-blocking path continues below)

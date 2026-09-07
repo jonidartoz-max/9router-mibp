@@ -124,19 +124,6 @@ export const KIMCHI_CONFIG = { ...PROVIDER_OAUTH["kimchi"] };
 // Endpoint: cli-chat-proxy.grok.com — same client_id as xai, different flow + scopes
 export const GROK_CLI_CONFIG = { ...PROVIDER_OAUTH["grok-cli"] };
 
-// Freebuff OAuth Configuration (Device Code Flow)
-export const FREEBUFF_CONFIG = { ...PROVIDER_OAUTH["freebuff"] };
-
-// Z.ai (Zhipu GLM) OAuth Configuration (Authorization Code via ZCode proxy)
-// clientId is the ZCode desktop app's public client_id. Token exchange is proxied
-// through zcode.z.ai (backend holds the real client_secret) so no secret needed here.
-export const ZAI_CONFIG = {
-  ...PROVIDER_OAUTH["zai"],
-  clientId:
-    process.env.ZAI_OAUTH_CLIENT_ID ||
-    PROVIDER_OAUTH["zai"]?.clientId,
-};
-
 // Trae (ByteDance marscode) OAuth — authorization_code flow with local callback.
 //   1) POST GetLoginGuidance {loginTraceID} → {Result.LoginHost}
 //   2) Browser opens ${loginHost}/authorization?client_id=...&login_trace_id=...&auth_callback_url=${cb}
@@ -212,6 +199,15 @@ export const ZED_HOSTED_CONFIG = {
 export const OAUTH_TIMEOUT = 300000;
 
 // Provider list
+// Freebuff OAuth Configuration (Device Code Flow)
+export const FREEBUFF_CONFIG = { ...PROVIDER_OAUTH["freebuff"] };
+
+// Z.ai (Zhipu GLM) OAuth Configuration (Authorization Code via ZCode proxy)
+export const ZAI_CONFIG = {
+  ...PROVIDER_OAUTH["zai"],
+  clientId: process.env.ZAI_OAUTH_CLIENT_ID || PROVIDER_OAUTH["zai"]?.clientId,
+};
+
 export const PROVIDERS = {
   CLAUDE: "claude",
   CODEX: "codex",

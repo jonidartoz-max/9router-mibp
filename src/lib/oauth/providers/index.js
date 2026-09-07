@@ -14,8 +14,8 @@ import iflow from "./iflow.js";
 import qoder from "./qoder.js";
 import github from "./github.js";
 import kiro from "./kiro.js";
-import cursor from "./cursor.js";
 import freebuff from "./freebuff.js";
+import cursor from "./cursor.js";
 import kimi from "./kimi.js";
 import kilocode from "./kilocode.js";
 import cline from "./cline.js";
@@ -41,8 +41,8 @@ const PROVIDERS = {
   qoder,
   github,
   kiro,
-  cursor,
   freebuff,
+  cursor,
   kimi,
   kilocode,
   cline,
