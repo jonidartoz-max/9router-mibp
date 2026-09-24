@@ -125,8 +125,8 @@ import p119 from "./selfhosted-embedding.js";
 import p120 from "./fish-audio.js";
 import p121 from "./alitp-intl.js";
 import p122 from "./xquik.js";
-import p124 from "./freebuff.js";
-import p125 from "./zai.js";
+import p126 from "./freebuff.js"; // custom MIBP (was p34 pre-0.5.69; p124 taken by qoder-cn)
+import p125 from "./zai.js"; // custom MIBP
 
 export default [
   p0,
@@ -163,7 +163,7 @@ export default [
   p31,
   p32,
   p33,
-  p124,
+  p126, // freebuff (custom MIBP)
   p34,
   p35,
   p36,
@@ -233,7 +233,7 @@ export default [
   p98,
   p99,
   p100,
-  p125,
+  p125, // zai (custom MIBP)
   // p102, // trae — hidden, no tool calling
   p103,
   p105,

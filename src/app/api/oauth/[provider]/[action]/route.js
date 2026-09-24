@@ -265,6 +265,7 @@ export async function GET(request, { params }) {
         "qoder",
         "qoder-cn",
         "grok-cli",
+        "freebuff", // custom MIBP (device_code, no PKCE)
       ];
       let deviceData;
       if (noPkceDeviceProviders.includes(provider)) {
