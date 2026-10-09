@@ -30,6 +30,10 @@ import { DefaultExecutor } from "./default.js";
 import { MinimaxCodeExecutor } from "./minimax-code.js";
 import { DevinCliExecutor } from "./devin-cli.js";
 import { FreebuffExecutor } from "./freebuff.js";
+import { DeepSeekWebExecutor } from "./deepseek-web.js";
+import { QwenWebExecutor } from "./qwen-web.js";
+import { ClaudeWebExecutor } from "./claude-web.js";
+import { GeminiWebExecutor } from "./gemini-web.js";
 
 const executors = {
   antigravity: new AntigravityExecutor(),
@@ -76,6 +80,10 @@ const executors = {
   // vertex / vertex-partner already uses.
   "bedrock-xai": new BedrockExecutor("bedrock-xai"),
   brx: new BedrockExecutor("bedrock-xai"), // Alias for bedrock-xai
+  "deepseek-web": new DeepSeekWebExecutor(),
+  "qwen-web": new QwenWebExecutor(),
+  "claude-web": new ClaudeWebExecutor(),
+  "gemini-web": new GeminiWebExecutor(),
 };
 
 const defaultCache = new Map();

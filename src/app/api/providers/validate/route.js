@@ -554,6 +554,63 @@ export async function POST(request) {
           }
           break;
         }
+        case "deepseek-web": {
+          const [dsToken, dsCookie] = String(apiKey).split("|").map((s) => (s || "").trim());
+          if (!dsToken && !dsCookie) { isValid = false; error = "Paste userToken and/or cookie from chat.deepseek.com"; break; }
+          const dsHeaders = {
+            "User-Agent": "DeepSeek/1.0.13 Android/35",
+            "Content-Type": "application/json",
+            "x-client-platform": "android",
+            "x-client-version": "1.3.0-auto-resume",
+            "x-client-locale": "en_US",
+          };
+          if (dsToken) dsHeaders.Authorization = `Bearer ${dsToken}`;
+          if (dsCookie) dsHeaders.Cookie = dsCookie.includes("=") ? dsCookie : `ds_session_id=${dsCookie}`;
+          const dsRes = await fetch("https://chat.deepseek.com/api/v0/chat_session/create", {
+            method: "POST", headers: dsHeaders, body: JSON.stringify({ agent: "chat" }),
+          });
+          if (dsRes.status === 401 || dsRes.status === 403) { isValid = false; error = "DeepSeek rejected the token/cookie — re-paste from chat.deepseek.com"; }
+          else { isValid = true; }
+          break;
+        }
+
+        case "qwen-web": {
+          const [qwToken, qwSsm] = String(apiKey).split("|").map((s) => (s || "").trim());
+          const qwHeaders = { "Content-Type": "application/json", source: "web", version: "0.2.66", Origin: "https://chat.qwen.ai", Referer: "https://chat.qwen.ai/" };
+          if (qwToken) { qwHeaders.Authorization = `Bearer ${qwToken}`; qwHeaders.Cookie = `token=${qwToken}` + (qwSsm ? `; ${qwSsm.includes("=") ? qwSsm : `ssxmod_itna=${qwSsm}`}` : ""); }
+          const qwRes = await fetch("https://chat.qwen.ai/api/v2/chats/new", {
+            method: "POST", headers: qwHeaders, body: JSON.stringify({ title: "ping", models: ["qwen3.7-max"], chat_mode: "normal", chat_type: "t2t" }),
+          });
+          if (qwRes.status === 401 || qwRes.status === 403) { isValid = false; error = "Qwen rejected the token — re-paste the `token` cookie from chat.qwen.ai"; }
+          else { isValid = true; }
+          break;
+        }
+
+        case "claude-web": {
+          const [cwKey, cwOrg, cwCf] = String(apiKey).split("|").map((s) => (s || "").trim());
+          if (!cwKey) { isValid = false; error = "Paste sessionKey|orgUuid from claude.ai"; break; }
+          const cwCookies = [`sessionKey=${cwKey}`];
+          if (cwOrg) cwCookies.push(`lastActiveOrg=${cwOrg}`);
+          if (cwCf) cwCookies.push(`cf_clearance=${cwCf}`);
+          const cwRes = await fetch("https://claude.ai/api/organizations", {
+            headers: { "User-Agent": "Mozilla/5.0", Cookie: cwCookies.join("; ") },
+          });
+          if (cwRes.status === 401 || cwRes.status === 403) { isValid = false; error = "Claude rejected the sessionKey (or Cloudflare blocked it — add cf_clearance as a 3rd field)"; }
+          else { isValid = true; }
+          break;
+        }
+
+        case "gemini-web": {
+          const gwCookie = String(apiKey).includes("=") ? apiKey : `__Secure-1PSID=${apiKey}`;
+          const gwRes = await fetch("https://gemini.google.com/app", {
+            headers: { "User-Agent": "Mozilla/5.0", Cookie: gwCookie },
+          });
+          const gwHtml = await gwRes.text();
+          if (gwHtml.includes("SNlM0e")) { isValid = true; }
+          else { isValid = false; error = "Gemini cookie not accepted — re-paste from gemini.google.com (needs __Secure-1PSID + __Secure-1PSIDTS)"; }
+          break;
+        }
+
 
         case "perplexity-web": {
           let sessionToken = apiKey;

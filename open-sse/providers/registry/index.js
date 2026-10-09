@@ -139,6 +139,10 @@ import p136 from "./bedrock.js";
 import p137 from "./bedrock-xai.js";
 import p138 from "./freebuff.js"; // custom MIBP (renumbered; upstream took p125-p137)
 import p139 from "./zai.js"; // custom MIBP
+import p140 from "./deepseek-web.js"; // MIBP chat2api
+import p141 from "./qwen-web.js"; // MIBP chat2api
+import p142 from "./claude-web.js"; // MIBP chat2api
+import p143 from "./gemini-web.js"; // MIBP chat2api
 export default [
   p0,
   p1,
@@ -278,4 +282,8 @@ export default [
   p135,
   p136,
   p137,
+  p140,
+  p141,
+  p142,
+  p143,
 ];

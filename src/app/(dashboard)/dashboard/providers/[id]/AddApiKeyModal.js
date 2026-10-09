@@ -14,8 +14,16 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const isCookie = authType === "cookie";
   const isXaiApiKey = provider === "xai" && !isCookie;
   const credentialLabel = isCookie ? "Cookie Value" : provider === "qoder" || provider === "qoder-cn" ? "Personal Access Token (PAT)" : "API Key";
+  const COOKIE_PLACEHOLDERS = {
+    "grok-web": "sso=xxxxx... or just the raw value",
+    "perplexity-web": "__Secure-next-auth.session-token=...",
+    "deepseek-web": "userToken|cookie (from chat.deepseek.com)",
+    "qwen-web": "token cookie (eyJ\u2026) from chat.qwen.ai",
+    "claude-web": "sessionKey|orgUuid (sk-ant-sid02-\u2026)",
+    "gemini-web": "__Secure-1PSID=...; __Secure-1PSIDTS=...; SAPISID=...",
+  };
   const credentialPlaceholder = isCookie
-    ? (provider === "grok-web" ? "sso=xxxxx... or just the raw value" : "eyJhbGciOi...")
+    ? (COOKIE_PLACEHOLDERS[provider] || "eyJhbGciOi...")
     : (isXaiApiKey ? "xai-..." : provider === "qoder" || provider === "qoder-cn" ? "pt-..." : "");
 
   const isAzure = provider === "azure";
