@@ -125,6 +125,26 @@ export function formatToolsHint(tools) {
   );
 }
 
+// When the transcript already ends with tool results, the trailing "call a tool"
+// instruction above biases the model into calling again forever. This directive
+// tells it the results are final and it must answer now.
+export const TOOL_RESULT_FOLLOWUP =
+  "\n\n## Tool Results Already Available\n" +
+  "The tool call(s) shown above have ALREADY been executed; their results appear in the " +
+  "transcript as [TOOL_RESULT ...] lines. Use them to answer the user's ORIGINAL question " +
+  "directly in plain text. Do NOT emit another [function_calls] block.";
+
+// True when the last non-empty turn is a tool result — i.e. the model must answer
+// now instead of requesting another tool.
+export function endsWithToolResult(items) {
+  for (let i = (items?.length || 0) - 1; i >= 0; i--) {
+    const role = items[i]?.role;
+    if (role === "tool") return true;
+    if (role === "assistant" || role === "user" || role === "system") return false;
+  }
+  return false;
+}
+
 // Extract [function_calls]/[call:name]{json}[/call] blocks into OpenAI tool_calls.
 // Falls back to a bare {"name":..,"arguments":..} object if no bracket block exists.
 export function extractToolCalls(text) {

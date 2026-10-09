@@ -19,6 +19,8 @@ import {
   splitCredential,
   parseOpenAIMessages,
   formatToolsHint,
+  TOOL_RESULT_FOLLOWUP,
+  endsWithToolResult,
   jsonError,
   badRequest,
   buildStreamingResponse,
@@ -139,6 +141,7 @@ export class QwenWebExecutor extends BaseExecutor {
     let prompt = parsed.flatPrompt;
     const toolsHint = formatToolsHint(body?.tools);
     if (toolsHint) prompt += toolsHint;
+    if (endsWithToolResult(parsed.items)) prompt += TOOL_RESULT_FOLLOWUP;
     if (!prompt.trim()) {
       return { response: badRequest("Empty query after processing"), url: COMPLETIONS, headers, transformedBody: body };
     }

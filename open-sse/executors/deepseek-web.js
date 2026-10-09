@@ -26,6 +26,8 @@ import {
   splitCredential,
   parseOpenAIMessages,
   formatToolsHint,
+  TOOL_RESULT_FOLLOWUP,
+  endsWithToolResult,
   jsonError,
   badRequest,
   buildStreamingResponse,
@@ -382,6 +384,7 @@ export class DeepSeekWebExecutor extends BaseExecutor {
     let prompt = buildPrompt(parsed.items);
     const toolsHint = formatToolsHint(body?.tools);
     if (toolsHint) prompt += toolsHint;
+    if (endsWithToolResult(parsed.items)) prompt += TOOL_RESULT_FOLLOWUP;
     if (!prompt.trim()) {
       return { response: badRequest("Empty query after processing"), url: COMPLETION, headers: {}, transformedBody: body };
     }
