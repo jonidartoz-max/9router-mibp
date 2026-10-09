@@ -48,6 +48,32 @@ export function contentToText(content) {
   return "";
 }
 
+// Render ONE message to text, including tool-call and tool-result structure.
+// Web models are driven by a plain transcript, so a prior assistant tool call must
+// be visible (as a [function_calls] block) and a tool result must be labelled —
+// otherwise the model never learns the tool already ran and calls it forever.
+export function messageToText(msg) {
+  const role = String(msg?.role || "user");
+  const text = contentToText(msg?.content);
+
+  if (role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+    const body = msg.tool_calls
+      .map((tc) => {
+        const fn = tc?.function || {};
+        const args = typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments || {});
+        return `[call:${fn.name || "tool"}]${args}[/call]`;
+      })
+      .join("\n");
+    return (text ? `${text}\n` : "") + `[function_calls]\n${body}\n[/function_calls]`;
+  }
+
+  if (role === "tool") {
+    return `[TOOL_RESULT for ${msg.tool_call_id || "call"}] ${text}`;
+  }
+
+  return text;
+}
+
 // Flatten an OpenAI messages array into { system, history, currentMsg, flatPrompt }.
 // `history` excludes the final user turn; `currentMsg` is the last user text.
 export function parseOpenAIMessages(messages) {
@@ -55,7 +81,7 @@ export function parseOpenAIMessages(messages) {
   for (const msg of messages || []) {
     let role = String(msg?.role || "user");
     if (role === "developer") role = "system";
-    const text = contentToText(msg?.content);
+    const text = messageToText({ ...msg, role });
     if (!text.trim()) continue;
     items.push({ role, content: text });
   }
