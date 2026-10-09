@@ -333,6 +333,15 @@ async function* extractContent(body, signal) {
     let chunk;
     try { chunk = JSON.parse(payload); } catch { continue; }
 
+    // Upstream error frames (e.g. rate limiting) arrive as
+    //   {"type":"error","content":"...","finish_reason":"rate_limit_reached"}
+    // with no patch/response body. Surface them instead of returning empty text.
+    if (chunk?.type === "error" || chunk?.finish_reason === "rate_limit_reached") {
+      const msg = chunk?.content || "DeepSeek returned an error";
+      yield { error: /频繁|too frequently|rate/i.test(msg) ? "DeepSeek rate limit reached — wait a few seconds and retry" : msg };
+      return;
+    }
+
     const out = [];
 
     // snapshot frame: full response object with fragments[]
