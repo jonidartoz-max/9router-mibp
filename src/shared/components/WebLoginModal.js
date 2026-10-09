@@ -19,6 +19,7 @@ export default function WebLoginModal({ isOpen, provider, providerName, onCaptur
   const [error, setError] = useState(null);
   const [detail, setDetail] = useState(null);
   const [loggedIn, setLoggedIn] = useState(false);
+  const [onOauth, setOnOauth] = useState(false);
   const sessionRef = useRef(null);
   const pollRef = useRef(null);
   const capturedRef = useRef(false);
@@ -126,6 +127,7 @@ export default function WebLoginModal({ isOpen, provider, providerName, onCaptur
       try {
         const res = await fetch(`/api/providers/weblogin?session=${encodeURIComponent(session)}`);
         const data = await res.json();
+        setOnOauth(!!data?.needsHuman);
         if (data?.loggedIn) {
           setLoggedIn(true);
           stopPolling();
@@ -209,7 +211,11 @@ export default function WebLoginModal({ isOpen, provider, providerName, onCaptur
                     <span className="relative inline-flex size-2 rounded-full bg-primary" />
                   </span>
                   <span className="text-text-muted">
-                    {loggedIn ? "Sign-in detected…" : "Waiting for you to sign in…"}
+                    {onOauth
+                      ? "Finish signing in (Google/Apple window)…"
+                      : loggedIn
+                        ? "Sign-in detected…"
+                        : "Waiting for you to sign in…"}
                   </span>
                 </>
               )}

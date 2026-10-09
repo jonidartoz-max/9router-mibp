@@ -188,6 +188,18 @@ class CdpConnection {
     return r?.result?.result?.value ?? null;
   }
 
+  // Evaluate in the current document only — never navigates. Essential during a
+  // login flow: navigating the user's tab away can cancel an in-flight sign-in.
+  async evalNow(expression) {
+    const r = await this.send("Runtime.evaluate", {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    if (r?.result?.exceptionDetails) return null;
+    return r?.result?.result?.value ?? null;
+  }
+
   async getCookies(url) {
     const r = await this.send("Network.getCookies", url ? { urls: [url] } : {});
     return r?.result?.cookies || [];
@@ -200,6 +212,45 @@ class CdpConnection {
       /* ignore */
     }
   }
+}
+
+// All page targets (one per browser tab). Popups — e.g. the Google sign-in
+// window — appear here as separate targets with their own URL.
+export async function listPageTargets(port) {
+  try {
+    const r = await fetch(`http://127.0.0.1:${port}/json/list`);
+    const list = await r.json();
+    return list.filter((t) => t.type === "page" && t.webSocketDebuggerUrl);
+  } catch {
+    return [];
+  }
+}
+
+// Attach to a specific target by its websocket URL.
+export async function attachToTarget(wsUrl) {
+  const ws = new WebSocket(wsUrl);
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("CDP attach timeout")), 10000);
+    ws.addEventListener("open", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    ws.addEventListener("error", (e) => {
+      clearTimeout(timer);
+      reject(new Error("CDP attach error" + (e?.message ? `: ${e.message}` : "")));
+    });
+  });
+  return new CdpConnection(ws);
+}
+
+// Attach to the first page target whose URL contains any of `hosts`.
+export async function attachToHost(port, hosts) {
+  const list = await listPageTargets(port);
+  const wanted = Array.isArray(hosts) ? hosts : [hosts];
+  const target = list.find((t) => wanted.some((h) => (t.url || "").includes(h)));
+  if (!target) return null;
+  const cdp = await attachToTarget(target.webSocketDebuggerUrl);
+  return { cdp, target };
 }
 
 // Wait for the debugging port to come up and attach to the first page target.
