@@ -556,20 +556,41 @@ export async function POST(request) {
         }
         case "deepseek-web": {
           const [dsToken, dsCookie] = String(apiKey).split("|").map((s) => (s || "").trim());
-          if (!dsToken && !dsCookie) { isValid = false; error = "Paste userToken and/or cookie from chat.deepseek.com"; break; }
+          if (!dsToken && !dsCookie) { isValid = false; error = "Paste the userToken from chat.deepseek.com (cookie optional)"; break; }
+          // Web-client profile — the Android one is rejected with CLIENT_VERSION_TOO_LOW.
           const dsHeaders = {
-            "User-Agent": "DeepSeek/1.0.13 Android/35",
+            Accept: "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Content-Type": "application/json",
-            "x-client-platform": "android",
-            "x-client-version": "1.3.0-auto-resume",
-            "x-client-locale": "en_US",
+            Origin: "https://chat.deepseek.com",
+            Referer: "https://chat.deepseek.com/",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+            "X-App-Version": "2.0.0",
+            "X-Client-Locale": "zh_CN",
+            "X-Client-Platform": "web",
+            "X-Client-Version": "2.0.0",
           };
           if (dsToken) dsHeaders.Authorization = `Bearer ${dsToken}`;
-          if (dsCookie) dsHeaders.Cookie = dsCookie.includes("=") ? dsCookie : `ds_session_id=${dsCookie}`;
+          // The site accepts a well-formed cookie; only fall back to a paste if given.
+          const dsNow = Date.now();
+          const dsRand = (n) => Math.random().toString(16).slice(2, 2 + n).padEnd(n, "0");
+          dsHeaders.Cookie = dsCookie
+            ? (dsCookie.includes("=") ? dsCookie : `ds_session_id=${dsCookie}`)
+            : `intercom-HWWAFSESTIME=${dsNow}; HWWAFSESID=${dsRand(18)}; _frid=${dsRand(8)}-${dsRand(4)}-4${dsRand(3)}-8${dsRand(3)}-${dsRand(12)}`;
           const dsRes = await fetch("https://chat.deepseek.com/api/v0/chat_session/create", {
             method: "POST", headers: dsHeaders, body: JSON.stringify({ agent: "chat" }),
           });
-          if (dsRes.status === 401 || dsRes.status === 403) { isValid = false; error = "DeepSeek rejected the token/cookie — re-paste from chat.deepseek.com"; }
+          if (dsRes.status === 401 || dsRes.status === 403) { isValid = false; error = "DeepSeek rejected the token — re-copy the userToken from chat.deepseek.com"; }
+          else if (dsRes.status === 200) {
+            const dsBody = await dsRes.json().catch(() => ({}));
+            const dsCode = dsBody?.code;
+            if (dsCode === 40005) { isValid = false; error = "DeepSeek rejected the client version (executor needs updating)"; }
+            else if (dsCode === 40003) { isValid = false; error = "DeepSeek token is invalid or expired — re-copy userToken"; }
+            else { isValid = true; }
+          }
           else { isValid = true; }
           break;
         }

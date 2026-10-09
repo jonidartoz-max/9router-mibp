@@ -8,7 +8,7 @@ provider inside 9Router — no official API key, no per-token billing. These sit
 
 | Provider id | Site | Credential to paste | Notes |
 |---|---|---|---|
-| `deepseek-web` | chat.deepseek.com | `userToken\|cookie` | PoW (DeepSeekHashV1) solved automatically with Node's built-in SHA3-256 — no wasm |
+| `deepseek-web` | chat.deepseek.com | `userToken` (cookie optional) | Web-client headers + auto-generated session cookie + auto token refresh (ported from `xiaoY233/Chat2API`). PoW (DeepSeekHashV1) solved with Node's built-in SHA3-256 — no wasm |
 | `qwen-web` | chat.qwen.ai | `token` cookie (optionally `token\|ssxmod_itna`) | Anonymous works but is rate-limited; add `-thinking` to a model for reasoning |
 | `claude-web` | claude.ai | `sessionKey\|orgUuid` (optionally `\|cfClearance`) | Cloudflare may require `cf_clearance` as a 3rd field |
 | `gemini-web` | gemini.google.com | Google cookie string (`__Secure-1PSID=…; __Secure-1PSIDTS=…; SAPISID=…`) | Anonymous serves Flash only; cookie unlocks Pro/thinking |
@@ -61,13 +61,37 @@ Supported: `deepseek-web`, `qwen-web`, `claude-web`, `gemini-web`, `grok-web`,
   p140–p143), `providers/validate/route.js` + `test/testUtils.js` (connection test),
   `AddApiKeyModal.js` (cookie placeholder hints).
 
+## DeepSeek client fingerprint (ported from `xiaoY233/Chat2API`)
+
+The DeepSeek web API rejects requests whose client profile it doesn't recognise.
+Probing `/api/v0/chat_session/create` shows the difference plainly:
+
+| Client profile | Response |
+|---|---|
+| Old Android headers (`DeepSeek/1.0.13 Android/35`) | `{"code":40005,"msg":"CLIENT_VERSION_TOO_LOW"}` ❌ |
+| Web headers (`X-Client-Platform: web`, `X-Client-Version: 2.0.0`, Origin/Referer/Sec-Fetch) | `{"code":40003,"msg":"Authorization Failed (invalid token)"}` ✅ (accepted; only the token was fake) |
+
+Three things the executor now does that it didn't before:
+
+1. **Web client headers** — a real `chat.deepseek.com` browser profile, so the
+   request isn't classified as a stale/mobile client.
+2. **Generated session cookie** — `intercom-HWWAFSESTIME`, `HWWAFSESID`, `_frid`, … are
+   minted per request. Pasting cookies from DevTools is now **optional**; only the
+   `userToken` is required.
+3. **Token refresh** — `userToken` is exchanged at `GET /api/v0/users/current` for a
+   fresh access token (cached 1 h). Long-lived connections no longer die when the
+   short-lived token rolls over.
+
 ## Caveats (read before shipping)
 
 These are **reverse-engineered** endpoints. They can break without notice when the
 site changes its protocol or anti-bot rules:
 
-- **DeepSeek** — needs the `aws-waf-token` cookie the browser earned; the PoW step is
-  self-contained and robust.
+- **DeepSeek** — the executor supplies its own web-client headers and session cookie,
+  so only `userToken` is needed. Registration/sign-up itself is separately gated by
+  DeepSeek's IP/device fingerprinting ("Current device environment error" /
+  `RECAPTCHA_VERIFY_FAILED`) — that affects *creating* accounts, not using them.
+  The PoW step is self-contained and robust.
 - **Qwen** — the WAF (`ssxmod_itna`, `bx-ua`) rotates; a plain token may 403 eventually.
 - **Claude** — Cloudflare `cf_clearance` is bound to the browser User-Agent that
   created it; a mismatch 403s.

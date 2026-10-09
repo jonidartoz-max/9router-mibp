@@ -38,7 +38,68 @@ const CREATE_POW = `${BASE}/api/v0/chat/create_pow_challenge`;
 const COMPLETION = `${BASE}/api/v0/chat/completion`;
 const DELETE_SESSION = `${BASE}/api/v0/chat_session/delete`;
 
-const UA = "DeepSeek/1.0.13 Android/35";
+// --- Web-client headers (ported from xiaoY233/Chat2API) ---------------------
+// The web endpoint fingerprints the client. The Android client headers that were
+// used before got flagged ("Current device environment error"); the browser
+// profile below is what the real chat.deepseek.com web app sends, so the server
+// treats us as a normal web session.
+const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36";
+
+const WEB_HEADERS = {
+  Accept: "*/*",
+  "Accept-Encoding": "gzip, deflate, br, zstd",
+  "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+  Origin: BASE,
+  Referer: `${BASE}/`,
+  "Sec-Ch-Ua": '"Not/A)Brand";v="99", "Chromium";v="148"',
+  "Sec-Ch-Ua-Mobile": "?0",
+  "Sec-Ch-Ua-Platform": '"macOS"',
+  "Sec-Fetch-Dest": "empty",
+  "Sec-Fetch-Mode": "cors",
+  "Sec-Fetch-Site": "same-origin",
+  "User-Agent": UA,
+  "X-App-Version": "2.0.0",
+  "X-Client-Locale": "zh_CN",
+  "X-Client-Platform": "web",
+  "x-Client-Timezone-Offset": "28800",
+  "X-Client-Version": "2.0.0",
+};
+
+const USERS_CURRENT = `${BASE}/api/v0/users/current`;
+
+// token → { accessToken, expiresAt }. The localStorage `userToken` is a refresh
+// credential: exchanging it at /users/current yields a short-lived access token.
+const TOKEN_CACHE = new Map();
+
+function randomHex(n) {
+  return crypto.randomBytes(Math.ceil(n / 2)).toString("hex").slice(0, n);
+}
+
+function fakeUuid() {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+// A browser session cookie invented on the spot. The real site earns a WAF
+// cookie via JS, but the API only needs *a* well-formed one — this removes the
+// requirement to hand-copy cookies out of DevTools.
+function generateCookie() {
+  const ts = Date.now();
+  const s = Math.floor(ts / 1000);
+  const h = randomHex(18);
+  return [
+    `intercom-HWWAFSESTIME=${ts}`,
+    `HWWAFSESID=${h}`,
+    `Hm_lvt_${fakeUuid()}=${s},${s},${s}`,
+    `Hm_lpvt_${fakeUuid()}=${s}`,
+    `_frid=${fakeUuid()}`,
+    `_fr_ssid=${fakeUuid()}`,
+    `_fr_pvid=${fakeUuid()}`,
+  ].join("; ");
+}
 
 // Model slug → { thinking, search }. Anything else falls back to chat.
 const MODEL_FLAGS = {
@@ -55,17 +116,36 @@ const MODEL_FLAGS = {
 const POW_CACHE = new Map(); // challenge hex → nonce, avoids re-solving identical challenges
 
 function baseHeaders() {
-  return {
-    Host: HOST,
-    "User-Agent": UA,
-    Accept: "application/json",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Content-Type": "application/json",
-    "x-client-platform": "android",
-    "x-client-version": "1.3.0-auto-resume",
-    "x-client-locale": "en_US",
-    "accept-charset": "UTF-8",
-  };
+  return { ...WEB_HEADERS };
+}
+
+// Exchange the stored localStorage `userToken` for a fresh access token.
+// The raw userToken works for a while, but the server also accepts it as a
+// refresh credential here — refreshing keeps long sessions alive without the
+// user re-pasting anything.
+async function refreshAccessToken(userToken, signal, log) {
+  const cached = TOKEN_CACHE.get(userToken);
+  const now = Math.floor(Date.now() / 1000);
+  if (cached && cached.expiresAt > now + 60) return cached.accessToken;
+
+  try {
+    const res = await fetch(USERS_CURRENT, {
+      method: "GET",
+      headers: { ...WEB_HEADERS, Authorization: `Bearer ${userToken}` },
+      signal,
+    });
+    if (!res.ok) return userToken;
+    const data = await res.json().catch(() => null);
+    const fresh = data?.data?.biz_data?.token;
+    if (fresh && typeof fresh === "string") {
+      TOKEN_CACHE.set(userToken, { accessToken: fresh, expiresAt: now + 3600 });
+      log?.info?.("DEEPSEEK-WEB", "Access token refreshed via /users/current");
+      return fresh;
+    }
+  } catch (err) {
+    log?.warn?.("DEEPSEEK-WEB", `Token refresh skipped: ${err.message || String(err)}`);
+  }
+  return userToken;
 }
 
 // Merge consecutive same-role turns and tag non-final turns, mirroring the app.
@@ -162,10 +242,13 @@ export class DeepSeekWebExecutor extends BaseExecutor {
       return { response: badRequest("Missing or empty messages array"), url: COMPLETION, headers: {}, transformedBody: body };
     }
 
-    const [userToken, cookie] = splitCredential(credentials?.apiKey || credentials?.accessToken || "");
-    if (!userToken && !cookie) {
-      return { response: badRequest("DeepSeek Web needs a userToken and/or session cookie"), url: COMPLETION, headers: {}, transformedBody: body };
+    const [userTokenRaw, cookie] = splitCredential(credentials?.apiKey || credentials?.accessToken || "");
+    if (!userTokenRaw && !cookie) {
+      return { response: badRequest("DeepSeek Web needs a userToken (localStorage) — cookie is optional"), url: COMPLETION, headers: {}, transformedBody: body };
     }
+
+    // Refresh the token; fall back to the raw value if the exchange fails.
+    const userToken = userTokenRaw ? await refreshAccessToken(userTokenRaw, signal, log) : "";
 
     const flags = MODEL_FLAGS[model] || MODEL_FLAGS["deepseek-chat"];
     const parsed = parseOpenAIMessages(messages);
@@ -177,7 +260,11 @@ export class DeepSeekWebExecutor extends BaseExecutor {
     }
 
     const authHeaders = { ...baseHeaders() };
-    if (cookie) authHeaders.Cookie = cookie.includes("=") ? cookie : `ds_session_id=${cookie}`;
+    // Prefer the real browser cookie when the user pasted one, otherwise mint a
+    // well-formed one — this is what removes the "copy cookies from DevTools" step.
+    authHeaders.Cookie = cookie
+      ? (cookie.includes("=") ? cookie : `ds_session_id=${cookie}`)
+      : generateCookie();
     if (userToken) authHeaders.Authorization = `Bearer ${userToken}`;
 
     let sessionId;
@@ -201,12 +288,14 @@ export class DeepSeekWebExecutor extends BaseExecutor {
       chat_session_id: sessionId,
       parent_message_id: null,
       prompt,
+      model_type: flags.thinking ? "reasoner" : "chat",
       ref_file_ids: [],
       thinking_enabled: flags.thinking,
       search_enabled: flags.search,
+      preempt: false,
     };
 
-    const headers = { ...authHeaders };
+    const headers = { ...authHeaders, Referer: `${BASE}/a/chat/s/${sessionId}` };
     if (powHeader) headers["x-ds-pow-response"] = powHeader;
 
     log?.info?.("DEEPSEEK-WEB", `Query ${model} (thinking=${flags.thinking}, search=${flags.search}), len=${prompt.length}`);
