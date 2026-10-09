@@ -102,9 +102,19 @@ These were all wrong at first and each one silently broke a feature:
   (`[function_calls]` / `[call:name]{json}[/call]`); a parser converts the reply into
   OpenAI `tool_calls` with `finish_reason: "tool_calls"` for both streaming and
   non-streaming. The same builder is shared by qwen/claude/gemini executors.
+  - The transcript must **keep the call/result pairing**: a prior assistant
+    `tool_calls` is re-rendered as a `[function_calls]` block and each result as
+    `[TOOL_RESULT for <id>] <text>`. Without this the model never learns the tool
+    already ran and re-calls it forever.
+  - When the transcript **ends** with tool results, a `TOOL_RESULT_FOLLOWUP`
+    directive is appended after the tool instructions ("results are final, answer
+    now, do NOT emit another [function_calls] block"). Otherwise the trailing
+    "call a tool" instruction wins and the agent loops.
 
-Verified end-to-end through the running server: plain chat, web-search (with
-`[citation:N]`), reasoning (`reasoning_content`), tool-calls and streaming.
+Verified end-to-end through the running server **and with the real OpenAI SDK**
+(streaming and non-streaming): plain chat, web-search (with `[citation:N]`),
+reasoning (`reasoning_content`), single-tool and 4-parallel-tool agent loops, all
+terminating on turn 2 with a final answer.
 
 ## Caveats (read before shipping)
 
