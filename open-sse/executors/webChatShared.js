@@ -245,7 +245,7 @@ export async function buildNonStreamingResponse(gen, model, signal, tools) {
   }
 
   const msg = { role: "assistant", content };
-  if (thinking.length) msg.reasoning_content = thinking.join("\n");
+  if (thinking.length) msg.reasoning_content = thinking.join("");
 
   let finishReason = "stop";
   if (Array.isArray(tools) && tools.length > 0 && content) {
