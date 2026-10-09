@@ -17,6 +17,8 @@
 // bearer-only / cookie-only, which the server accepts for most accounts.
 
 import crypto from "node:crypto";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import {
@@ -47,8 +49,11 @@ const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (
 
 const WEB_HEADERS = {
   Accept: "*/*",
-  "Accept-Encoding": "gzip, deflate, br, zstd",
+  "Accept-Encoding": "gzip, deflate, br",
   "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+  // Content-Type is REQUIRED: without it the API returns HTTP 422
+  // {"detail":[{"loc":"body"}]} and the caller wrongly reports "token expired".
+  "Content-Type": "application/json",
   Origin: BASE,
   Referer: `${BASE}/`,
   "Sec-Ch-Ua": '"Not/A)Brand";v="99", "Chromium";v="148"',
@@ -101,16 +106,17 @@ function generateCookie() {
   ].join("; ");
 }
 
-// Model slug → { thinking, search }. Anything else falls back to chat.
+// Model slug → { thinking, search, modelType }. model_type is what the server
+// expects ("default" | "expert") — NOT "chat"/"reasoner".
 const MODEL_FLAGS = {
-  "deepseek-chat": { thinking: false, search: false },
-  "deepseek-v3": { thinking: false, search: false },
-  "deepseek-reasoner": { thinking: true, search: false },
-  "deepseek-r1": { thinking: true, search: false },
-  "deepseek-chat-search": { thinking: false, search: true },
-  "deepseek-v3-search": { thinking: false, search: true },
-  "deepseek-reasoner-search": { thinking: true, search: true },
-  "deepseek-r1-search": { thinking: true, search: true },
+  "deepseek-chat": { thinking: false, search: false, modelType: "default" },
+  "deepseek-v3": { thinking: false, search: false, modelType: "default" },
+  "deepseek-reasoner": { thinking: true, search: false, modelType: "expert" },
+  "deepseek-r1": { thinking: true, search: false, modelType: "expert" },
+  "deepseek-chat-search": { thinking: false, search: true, modelType: "default" },
+  "deepseek-v3-search": { thinking: false, search: true, modelType: "default" },
+  "deepseek-reasoner-search": { thinking: true, search: true, modelType: "expert" },
+  "deepseek-r1-search": { thinking: true, search: true, modelType: "expert" },
 };
 
 const POW_CACHE = new Map(); // challenge hex → nonce, avoids re-solving identical challenges
@@ -164,18 +170,59 @@ function buildPrompt(items) {
     .join("\n\n");
 }
 
-function solvePow(challenge, salt, expireAt, difficulty) {
-  if (POW_CACHE.has(challenge)) return POW_CACHE.get(challenge);
+// --- Proof of Work: official DeepSeekHash WASM -------------------------------
+// The challenge is NOT a plain SHA3-256 preimage search — the server validates a
+// hash the official `sha3_wasm_bg.wasm` computes. A naive SHA3 loop returns
+// INVALID_POW_RESPONSE (40301). This loads the real module once and reuses it.
+const WASM_PATH = fileURLToPath(new URL("./sha3_wasm_bg.wasm", import.meta.url));
+
+let wasmExports = null;
+let wasmMem = null;
+let wasmOffset = 0;
+
+async function loadWasm() {
+  if (wasmExports) return wasmExports;
+  const bytes = fs.readFileSync(WASM_PATH);
+  const { instance } = await WebAssembly.instantiate(bytes, { wbg: {} });
+  wasmExports = instance.exports;
+  return wasmExports;
+}
+
+function wasmGetMem() {
+  if (!wasmMem || wasmMem.byteLength === 0) wasmMem = new Uint8Array(wasmExports.memory.buffer);
+  return wasmMem;
+}
+
+function wasmEncode(text) {
+  const enc = new TextEncoder().encode(text);
+  const ptr = wasmExports.__wbindgen_export_0(enc.length, 1) >>> 0;
+  wasmGetMem().subarray(ptr, ptr + enc.length).set(enc);
+  wasmOffset = enc.length;
+  return ptr;
+}
+
+function wasmSolve(challenge, salt, expireAt, difficulty) {
   const prefix = `${salt}_${expireAt}_`;
-  const max = Number(difficulty) || 144000;
-  for (let n = 0; n < max; n++) {
-    const digest = crypto.createHash("sha3-256").update(prefix + n, "utf8").digest("hex");
-    if (digest === challenge) {
-      POW_CACHE.set(challenge, n);
-      return n;
-    }
-  }
-  return null;
+  const retptr = wasmExports.__wbindgen_add_to_stack_pointer(-16);
+  const p0 = wasmEncode(challenge);
+  const l0 = wasmOffset;
+  const p1 = wasmEncode(prefix);
+  const l1 = wasmOffset;
+  wasmExports.wasm_solve(retptr, p0, l0, p1, l1, difficulty);
+  const dv = new DataView(wasmExports.memory.buffer);
+  const status = dv.getInt32(retptr + 0, true);
+  const value = dv.getFloat64(retptr + 8, true);
+  wasmExports.__wbindgen_add_to_stack_pointer(16);
+  return status === 0 ? null : value;
+}
+
+async function solvePow(challenge, salt, expireAt, difficulty) {
+  const key = `${challenge}:${salt}:${expireAt}`;
+  if (POW_CACHE.has(key)) return POW_CACHE.get(key);
+  await loadWasm();
+  const answer = wasmSolve(challenge, salt, expireAt, difficulty);
+  if (answer !== null && answer !== undefined) POW_CACHE.set(key, answer);
+  return answer;
 }
 
 async function getPowHeader(authHeaders, signal, log) {
@@ -191,7 +238,11 @@ async function getPowHeader(authHeaders, signal, log) {
     log?.warn?.("DEEPSEEK-WEB", "PoW challenge missing; sending request without proof");
     return null;
   }
-  const answer = solvePow(ch.challenge, ch.salt, ch.expire_at, ch.difficulty);
+  const answer = await solvePow(ch.challenge, ch.salt, ch.expire_at, ch.difficulty);
+  if (answer === null || answer === undefined) {
+    log?.warn?.("DEEPSEEK-WEB", "PoW could not be solved; sending request without proof");
+    return null;
+  }
   const payload = {
     algorithm: ch.algorithm || "DeepSeekHashV1",
     challenge: ch.challenge,
@@ -211,12 +262,68 @@ async function createSession(authHeaders, signal) {
     body: JSON.stringify({ agent: "chat" }),
     signal,
   });
-  const data = await res.json().catch(() => ({}));
-  return data?.data?.biz_data?.id || null;
+  const text = await res.text().catch(() => "");
+  let data = {};
+  try { data = JSON.parse(text); } catch {}
+  // Shape: { data: { biz_data: { chat_session: { id } } } } — the id is nested
+  // under chat_session, NOT directly under biz_data.
+  const id = data?.data?.biz_data?.chat_session?.id || null;
+  if (!id) {
+    // Surface the real reason instead of blaming the token for every failure.
+    const detail = data?.data?.biz_msg || data?.detail || text.slice(0, 160) || `HTTP ${res.status}`;
+    const err = new Error(`session create HTTP ${res.status}: ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
+    err.status = res.status;
+    throw err;
+  }
+  return id;
 }
 
-// Parse the JSON-patch SSE stream into { delta } / { thinking } events.
+// Parse the JSON-patch SSE stream.
+// The response is a list of fragments, each with a type. Content deltas are sent
+// as `response/fragments/-1/content` — the `-1` means "the LAST fragment", so we
+// must track fragment types to know whether a chunk is reasoning or the answer:
+//   THINK    → reasoning_content
+//   RESPONSE → content
+//   SEARCH   → web-search status text (ignored)
+// Frame shapes seen live:
+//   {"v":{"response":{"fragments":[{"type":"THINK","content":"We"}]}}}     snapshot
+//   {"p":"response","o":"BATCH","v":[{"p":"fragments","o":"APPEND","v":[{"type":"RESPONSE"}]}]}
+//   {"p":"response/fragments/-1/content","o":"APPEND","v":" x"}            op with path
+//   {"v":"x"}                                                             op continuing last path
 async function* extractContent(body, signal) {
+  let lastPath = "";
+  const fragTypes = []; // index → fragment type, kept in sync with the server
+
+  const channelFor = (path) => {
+    if (path.endsWith("/thinking_content")) return "thinking";
+    const m = path.match(/fragments\/(-?\d+)\/content$/);
+    if (!m) return null;
+    const idx = Number(m[1]);
+    const resolved = idx < 0 ? fragTypes.length + idx : idx;
+    const type = fragTypes[resolved];
+    if (type === "THINK") return "thinking";
+    if (type === "RESPONSE") return "content";
+    return null; // SEARCH / unknown fragments carry no answer text
+  };
+
+  const handleOp = (op, out) => {
+    if (op && typeof op.p === "string") lastPath = op.p;
+    const path = op && typeof op.p === "string" ? op.p : lastPath;
+    if (!op) return;
+    // fragment list append: record the new fragment types
+    if (path.endsWith("fragments") && op.v) {
+      const arr = Array.isArray(op.v) ? op.v : [op.v];
+      for (const f of arr) if (f?.type) fragTypes.push(f.type);
+      return;
+    }
+    if (typeof op.v === "string" && path) {
+      const ch = channelFor(path);
+      if (ch === "thinking") out.push({ thinking: op.v });
+      else if (ch === "content") out.push({ delta: op.v });
+    }
+    if (path === "response/status" && op.v === "FINISHED") out.push({ done: true });
+  };
+
   for await (const line of readLines(body, signal)) {
     if (!line || !line.startsWith("data:")) continue;
     const payload = line.slice(5).trim();
@@ -224,9 +331,29 @@ async function* extractContent(body, signal) {
     let chunk;
     try { chunk = JSON.parse(payload); } catch { continue; }
 
-    if (chunk.p === "response/status" && chunk.v === "FINISHED") { yield { done: true }; return; }
-    if (chunk.p === "response/content" && typeof chunk.v === "string") yield { delta: chunk.v };
-    else if (chunk.p === "response/thinking_content" && typeof chunk.v === "string") yield { thinking: chunk.v };
+    const out = [];
+
+    // snapshot frame: full response object with fragments[]
+    const resp = chunk?.v?.response;
+    if (!chunk?.p && resp) {
+      fragTypes.length = 0;
+      for (const frag of resp.fragments || []) {
+        fragTypes.push(frag.type);
+        if (!frag?.content) continue;
+        if (frag.type === "THINK") out.push({ thinking: frag.content });
+        else if (frag.type === "RESPONSE") out.push({ delta: frag.content });
+      }
+      if (resp.status === "FINISHED") out.push({ done: true });
+    } else if (chunk?.o === "BATCH" && Array.isArray(chunk.v)) {
+      for (const op of chunk.v) handleOp(op, out);
+    } else if (typeof chunk?.p === "string" || (typeof chunk?.v === "string" && lastPath)) {
+      handleOp(chunk, out);
+    }
+
+    for (const ev of out) {
+      yield ev;
+      if (ev.done) return;
+    }
   }
   yield { done: true };
 }
@@ -274,21 +401,14 @@ export class DeepSeekWebExecutor extends BaseExecutor {
       powHeader = await getPowHeader(authHeaders, signal, log);
     } catch (err) {
       log?.error?.("DEEPSEEK-WEB", `Handshake failed: ${err.message || String(err)}`);
-      return { response: jsonError(`DeepSeek handshake failed: ${err.message || String(err)}`), url: COMPLETION, headers: authHeaders, transformedBody: body };
-    }
-
-    if (!sessionId) {
-      return {
-        response: jsonError("DeepSeek refused session creation — userToken/cookie likely expired. Re-paste them from chat.deepseek.com."),
-        url: COMPLETION, headers: authHeaders, transformedBody: body,
-      };
+      return { response: jsonError(`DeepSeek handshake failed: ${err.message || String(err)}`, err.status || 502, "UPSTREAM_ERROR"), url: COMPLETION, headers: authHeaders, transformedBody: body };
     }
 
     const payload = {
       chat_session_id: sessionId,
       parent_message_id: null,
       prompt,
-      model_type: flags.thinking ? "reasoner" : "chat",
+      model_type: flags.modelType || (flags.thinking ? "expert" : "default"),
       ref_file_ids: [],
       thinking_enabled: flags.thinking,
       search_enabled: flags.search,
@@ -329,10 +449,10 @@ export class DeepSeekWebExecutor extends BaseExecutor {
     };
 
     if (stream) {
-      const { response: sseResponse } = buildStreamingResponse(extractContent(response.body, signal), model, signal);
+      const { response: sseResponse } = buildStreamingResponse(extractContent(response.body, signal), model, signal, body?.tools);
       return { response: sseResponse, url: COMPLETION, headers, transformedBody: payload, onComplete: cleanup };
     }
-    const finalResponse = await buildNonStreamingResponse(extractContent(response.body, signal), model, signal);
+    const finalResponse = await buildNonStreamingResponse(extractContent(response.body, signal), model, signal, body?.tools);
     cleanup();
     return { response: finalResponse, url: COMPLETION, headers, transformedBody: payload };
   }
