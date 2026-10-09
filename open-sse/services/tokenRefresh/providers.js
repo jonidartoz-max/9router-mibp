@@ -766,3 +766,9 @@ export async function refreshMiniMaxCodeToken(provider, refreshToken, log) {
     }
   }, log);
 }
+
+// Z.ai OAuth access_token is long-lived (~30d); the ZCode proxy has no
+// refresh_token grant. Re-login when expired — mirrors the zed/cursor pattern.
+export function refreshZaiToken() {
+  return null;
+}
