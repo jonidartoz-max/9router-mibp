@@ -98,6 +98,13 @@ These were all wrong at first and each one silently broke a feature:
   `SEARCH` → ignored. Continuation frames carry `{v}` with **no** `{p}` (they append to
   the previous path), and `BATCH` frames wrap an array of ops.
 - **`model_type`** — `"default"` | `"expert"` (not `"chat"`/`"reasoner"`).
+- **Rate limiting** — DeepSeek throttles rapid successive messages and signals it as a
+  plain SSE frame `{"type":"error","content":"消息发送过于频繁…","finish_reason":"rate_limit_reached"}`
+  (no patch/response body). The parser must surface that as an error, otherwise the
+  client sees an empty completion with no reason. The message is phrased to match
+  9router's `rate limit` error rule so it gets exponential backoff. When testing by
+  hand, pace requests a few seconds apart or the empty responses are throttling,
+  not a bug.
 - **Tool calls** — the model is prompted with the bracket protocol
   (`[function_calls]` / `[call:name]{json}[/call]`); a parser converts the reply into
   OpenAI `tool_calls` with `finish_reason: "tool_calls"` for both streaming and
