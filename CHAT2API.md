@@ -147,6 +147,24 @@ Verified end-to-end through the running server **and with the real OpenAI SDK**
 reasoning (`reasoning_content`), single-tool and 4-parallel-tool agent loops, all
 terminating on turn 2 with a final answer.
 
+### Model versions (verified against each site's own model catalog)
+
+Each registry is kept in sync with the **upstream web app's own model list**, not
+guessed from marketing pages:
+
+| Provider | Source of truth | Current top models |
+|---|---|---|
+| `deepseek-web` | `chat.deepseek.com` settings `model_configs` | DeepSeek **V4.1-Flash** (Instant / Expert) |
+| `qwen-web` | `chat.qwen.ai/api/models` | **Qwen3.8 Max**, Qwen3.8 Omni Flash, Qwen3.7 Plus |
+| `claude-web` | claude.ai model ids | **Claude Opus 5.5**, Sonnet 5.5, Fable 5.1 |
+| `gemini-web` | gemini.google.com + Perplexity catalog | **Gemini 3.8 Flash**, 3.6 Flash, 3.1 Pro |
+| `grok-web` | `grok.com` model modes | **Grok 4.7** (Expert/Heavy), 4.6, 4.5 |
+| `perplexity-web` | `perplexity.ai/rest/models/config` (143 models) | **GPT-5.5**, Claude Opus/Sonnet 5.5, Gemini 3.8 Flash, Grok 4.7, Kimi K3, GLM-5.3 |
+
+`perplexity.ai/rest/models/config` is the canonical catalog: it lists every model
+Perplexity proxies with its `mode` (`search`/`copilot`/`browser_agent`) and
+`provider`, so `pplx-*` ids map straight to real upstream identifiers.
+
 ## Caveats (read before shipping)
 
 These are **reverse-engineered** endpoints. They can break without notice when the

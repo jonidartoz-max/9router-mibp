@@ -15,18 +15,44 @@ const PPLX_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHT
 
 const MODEL_MAP = {
   "pplx-auto": ["concise", "pplx_pro"],
+  "pplx-best": ["concise", "turbo"],
   "pplx-sonar": ["copilot", "experimental"],
-  "pplx-gpt": ["copilot", "gpt54"],
-  "pplx-gemini": ["copilot", "gemini31pro_high"],
-  "pplx-sonnet": ["copilot", "claude46sonnet"],
-  "pplx-opus": ["copilot", "claude46opus"],
-  "pplx-nemotron": ["copilot", "nv_nemotron_3_super"],
+  // OpenAI
+  "pplx-gpt": ["copilot", "gpt55"],
+  "pplx-gpt55": ["copilot", "gpt55"],
+  "pplx-gpt56": ["copilot", "gpt56_sol"],
+  "pplx-gpt6": ["copilot", "gpt6_1_sol"],
+  // Anthropic
+  "pplx-sonnet": ["copilot", "claude55sonnet"],
+  "pplx-opus": ["copilot", "claude55opus"],
+  "pplx-haiku": ["copilot", "claude55haiku"],
+  "pplx-fable": ["copilot", "claudefable51"],
+  // Google
+  "pplx-gemini": ["copilot", "gemini38flash"],
+  "pplx-gemini-pro": ["copilot", "gemini31pro_high"],
+  // xAI
+  "pplx-grok": ["copilot", "grok47"],
+  // Others
+  "pplx-nemotron": ["copilot", "nv_nemotron_3_ultra"],
+  "pplx-kimi": ["copilot", "kimik3thinking"],
+  "pplx-glm": ["copilot", "glm_5_3_thinking"],
 };
 
 const THINKING_MAP = {
-  "pplx-gpt": "gpt54_thinking",
-  "pplx-sonnet": "claude46sonnetthinking",
-  "pplx-opus": "claude46opusthinking",
+  "pplx-gpt": "gpt55_thinking",
+  "pplx-gpt55": "gpt55_thinking",
+  "pplx-gpt56": "gpt56_sol_thinking",
+  "pplx-gpt6": "gpt6_1_sol_thinking",
+  "pplx-sonnet": "claude55sonnetthinking",
+  "pplx-opus": "claude55opusthinking",
+  "pplx-haiku": "claude55haikuthinking",
+  "pplx-fable": "claudefable51thinking",
+  "pplx-gemini": "gemini38flashthinking",
+  "pplx-gemini-pro": "gemini31pro_high",
+  "pplx-grok": "grok47thinking",
+  "pplx-nemotron": "nv_nemotron_3_ultra",
+  "pplx-kimi": "kimik3thinking",
+  "pplx-glm": "glm_5_3_thinking",
 };
 
 const CITATION_RE = /\[\d+\]/g;

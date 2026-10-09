@@ -37,13 +37,15 @@ const UA =
 
 // Model slug → upstream id. "-thinking" variants enable reasoning.
 const MODEL_MAP = {
-  "qwen-max": "qwen3.7-max",
+  "qwen-max": "qwen3.8-max",
   "qwen-plus": "qwen3.7-plus",
-  "qwen3-max": "qwen3.7-max",
-  "qwen3.7-max": "qwen3.7-max",
-  "qwen3.7-plus": "qwen3.7-plus",
+  "qwen3-max": "qwen3.8-max",
   "qwen3.8-max": "qwen3.8-max",
-  "qwen3-coder": "qwen3-coder-plus",
+  "qwen3.7-max": "qwen3.8-max",
+  "qwen3.7-plus": "qwen3.7-plus",
+  "qwen3.8-omni-flash": "qwen3.8-omni-flash",
+  "qwen3-omni-flash": "qwen3.8-omni-flash",
+  "qwen3-coder": "qwen3.8-max",
 };
 
 function resolveModel(model) {

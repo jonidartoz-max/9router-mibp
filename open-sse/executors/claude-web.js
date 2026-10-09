@@ -37,6 +37,18 @@ const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 
 const MODEL_MAP = {
+  // Claude 5.5 family (current on claude.ai)
+  "claude-opus-5.5": "claude-opus-5-5",
+  "claude-sonnet-5.5": "claude-sonnet-5-5",
+  "claude-fable-5.1": "claude-fable-5-1",
+  "claude-opus-5.5-thinking": "claude-opus-5-5",
+  "claude-sonnet-5.5-thinking": "claude-sonnet-5-5",
+  // Claude 5 / 4.8 / 4.7 (still served)
+  "claude-opus-5": "claude-opus-5",
+  "claude-sonnet-5": "claude-sonnet-5",
+  "claude-opus-4.8": "claude-opus-4-8",
+  "claude-opus-4.7": "claude-opus-4-7",
+  // Claude 4.6 / 4.5 (legacy, kept for existing configs)
   "claude-sonnet-4.6": "claude-sonnet-4-6",
   "claude-opus-4.6": "claude-opus-4-6",
   "claude-sonnet-4.5": "claude-sonnet-4-5",

@@ -27,10 +27,9 @@ export default {
   },
   models: [
     { id: "qwen3.8-max", name: "Qwen3.8 Max" },
-    { id: "qwen3.7-max", name: "Qwen3.7 Max" },
+    { id: "qwen3.8-omni-flash", name: "Qwen3.8 Omni Flash" },
     { id: "qwen3.7-plus", name: "Qwen3.7 Plus" },
-    { id: "qwen3-coder", name: "Qwen3 Coder" },
-    { id: "qwen3.7-max-thinking", name: "Qwen3.7 Max (Thinking)" },
-    { id: "qwen3-coder-thinking", name: "Qwen3 Coder (Thinking)" },
+    { id: "qwen3.8-max-thinking", name: "Qwen3.8 Max (Thinking)" },
+    { id: "qwen3.7-plus-thinking", name: "Qwen3.7 Plus (Thinking)" },
   ],
 };
