@@ -188,10 +188,10 @@ export class QwenWebExecutor extends BaseExecutor {
     }
 
     if (stream) {
-      const { response: sseResponse } = buildStreamingResponse(extractContent(response.body, signal), model, signal);
+      const { response: sseResponse } = buildStreamingResponse(extractContent(response.body, signal), model, signal, body?.tools);
       return { response: sseResponse, url, headers, transformedBody: payload };
     }
-    const finalResponse = await buildNonStreamingResponse(extractContent(response.body, signal), model, signal);
+    const finalResponse = await buildNonStreamingResponse(extractContent(response.body, signal), model, signal, body?.tools);
     return { response: finalResponse, url, headers, transformedBody: payload };
   }
 }

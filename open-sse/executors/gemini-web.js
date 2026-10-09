@@ -224,10 +224,10 @@ export class GeminiWebExecutor extends BaseExecutor {
 
     const gen = streamGemini(prompt, modeCategory, cookie, signal, log);
     if (stream) {
-      const { response: sseResponse } = buildStreamingResponse(gen, model, signal);
+      const { response: sseResponse } = buildStreamingResponse(gen, model, signal, body?.tools);
       return { response: sseResponse, url: STREAM_GEN, headers: {}, transformedBody: body };
     }
-    const finalResponse = await buildNonStreamingResponse(gen, model, signal);
+    const finalResponse = await buildNonStreamingResponse(gen, model, signal, body?.tools);
     return { response: finalResponse, url: STREAM_GEN, headers: {}, transformedBody: body };
   }
 }

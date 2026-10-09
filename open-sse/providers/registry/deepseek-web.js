@@ -13,13 +13,14 @@ export default {
     notice: {
       text:
         "Uses your logged-in DeepSeek web session instead of an API key. " +
-        "Paste the userToken (localStorage) and, separated by \"|\", the session cookie: " +
-        "\"userToken|cookie\". Solve the per-message proof-of-work automatically.",
+        "Paste the userToken (localStorage); the session cookie is optional — " +
+        "one is generated if omitted. Web search, thinking and tool-calls all work. " +
+        "Proof-of-work is solved automatically with the official DeepSeekHash WASM.",
     },
   },
   category: "webCookie",
   authType: "cookie",
-  authHint: "userToken|cookie (from chat.deepseek.com)",
+  authHint: "userToken (cookie optional)",
   transport: {
     baseUrl: "https://chat.deepseek.com/api/v0/chat/completion",
     format: "deepseek-web",

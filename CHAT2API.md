@@ -74,13 +74,37 @@ Probing `/api/v0/chat_session/create` shows the difference plainly:
 Three things the executor now does that it didn't before:
 
 1. **Web client headers** — a real `chat.deepseek.com` browser profile, so the
-   request isn't classified as a stale/mobile client.
+   request isn't classified as a stale/mobile client. **`Content-Type: application/json`
+   is required**: without it the API answers HTTP 422 and the executor used to
+   report the misleading "userToken expired".
 2. **Generated session cookie** — `intercom-HWWAFSESTIME`, `HWWAFSESID`, `_frid`, … are
    minted per request. Pasting cookies from DevTools is now **optional**; only the
    `userToken` is required.
 3. **Token refresh** — `userToken` is exchanged at `GET /api/v0/users/current` for a
-   fresh access token (cached 1 h). Long-lived connections no longer die when the
-   short-lived token rolls over.
+   fresh access token (cached 1 h).
+
+### Protocol details that must be right
+
+These were all wrong at first and each one silently broke a feature:
+
+- **Proof of work** — the challenge is *not* a plain SHA3-256 preimage search. The
+  server validates the output of the official `sha3_wasm_bg.wasm`; a naive loop
+  returns `INVALID_POW_RESPONSE` (40301). The WASM ships next to the executor and is
+  loaded once per process.
+- **Session id path** — `data.biz_data.chat_session.id`, not `data.biz_data.id`.
+- **SSE parsing** — the completion endpoint streams JSON-Patch. Deltas arrive as
+  `response/fragments/-1/content`, where `-1` is *the last fragment*; the fragment's
+  **type** decides the channel: `THINK` → `reasoning_content`, `RESPONSE` → `content`,
+  `SEARCH` → ignored. Continuation frames carry `{v}` with **no** `{p}` (they append to
+  the previous path), and `BATCH` frames wrap an array of ops.
+- **`model_type`** — `"default"` | `"expert"` (not `"chat"`/`"reasoner"`).
+- **Tool calls** — the model is prompted with the bracket protocol
+  (`[function_calls]` / `[call:name]{json}[/call]`); a parser converts the reply into
+  OpenAI `tool_calls` with `finish_reason: "tool_calls"` for both streaming and
+  non-streaming. The same builder is shared by qwen/claude/gemini executors.
+
+Verified end-to-end through the running server: plain chat, web-search (with
+`[citation:N]`), reasoning (`reasoning_content`), tool-calls and streaming.
 
 ## Caveats (read before shipping)
 
