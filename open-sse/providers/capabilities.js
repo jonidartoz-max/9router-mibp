@@ -194,6 +194,15 @@ const DEVIN_CLI_GPT_CAPS = { vision: true, reasoning: true, search: true, thinki
  * Provider-specific capability overrides. Keyed by provider alias/id.
  */
 export const PROVIDER_CAPABILITIES = {
+  // DeepSeek Web session (chat.deepseek.com) serves DeepSeek V4.1-Flash — 1M
+  // context. The generic "*deepseek-chat*" pattern caps it at 128K, so pin the
+  // real window here. Instant = non-thinking; Expert = thinking (reasoning).
+  "deepseek-web": {
+    "deepseek-chat":            { tools: true, contextWindow: 1000000, maxOutput: 128000 },
+    "deepseek-chat-search":     { tools: true, search: true, contextWindow: 1000000, maxOutput: 128000 },
+    "deepseek-reasoner":        { tools: true, reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: true, contextWindow: 1000000, maxOutput: 128000 },
+    "deepseek-reasoner-search": { tools: true, search: true, reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: true, contextWindow: 1000000, maxOutput: 128000 },
+  },
   // NVIDIA NIM is OpenAI-compatible → rejects MiniMax/GLM native `thinking` field.
   // Force openai reasoning_effort format for its reasoning models. #issue
   "nvidia": {

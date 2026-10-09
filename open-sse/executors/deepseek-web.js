@@ -109,16 +109,29 @@ function generateCookie() {
 }
 
 // Model slug → { thinking, search, modelType }. model_type is what the server
-// expects ("default" | "expert") — NOT "chat"/"reasoner".
+// expects ("default" | "expert" | "vision"); note the completion endpoint
+// currently ignores it and keys off thinking_enabled / search_enabled instead, so
+// we send both. chat.deepseek.com serves DeepSeek V4.1-Flash — "Instant" is the
+// non-thinking mode, "Expert" is the thinking mode.
 const MODEL_FLAGS = {
+  // Instant (non-thinking)
   "deepseek-chat": { thinking: false, search: false, modelType: "default" },
   "deepseek-v3": { thinking: false, search: false, modelType: "default" },
+  "deepseek-v4": { thinking: false, search: false, modelType: "default" },
+  "deepseek-v4-flash": { thinking: false, search: false, modelType: "default" },
+  "deepseek-v4.1-flash": { thinking: false, search: false, modelType: "default" },
+  // Expert (thinking)
   "deepseek-reasoner": { thinking: true, search: false, modelType: "expert" },
   "deepseek-r1": { thinking: true, search: false, modelType: "expert" },
+  "deepseek-v4-thinking": { thinking: true, search: false, modelType: "expert" },
+  "deepseek-v4.1-flash-thinking": { thinking: true, search: false, modelType: "expert" },
+  // + Search
   "deepseek-chat-search": { thinking: false, search: true, modelType: "default" },
   "deepseek-v3-search": { thinking: false, search: true, modelType: "default" },
+  "deepseek-v4-search": { thinking: false, search: true, modelType: "default" },
   "deepseek-reasoner-search": { thinking: true, search: true, modelType: "expert" },
   "deepseek-r1-search": { thinking: true, search: true, modelType: "expert" },
+  "deepseek-v4-thinking-search": { thinking: true, search: true, modelType: "expert" },
 };
 
 const POW_CACHE = new Map(); // challenge hex → nonce, avoids re-solving identical challenges

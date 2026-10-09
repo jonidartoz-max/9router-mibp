@@ -8,7 +8,7 @@ provider inside 9Router — no official API key, no per-token billing. These sit
 
 | Provider id | Site | Credential to paste | Notes |
 |---|---|---|---|
-| `deepseek-web` | chat.deepseek.com | `userToken` (cookie optional) | Web-client headers + auto-generated session cookie + auto token refresh (ported from `xiaoY233/Chat2API`). PoW (DeepSeekHashV1) solved with Node's built-in SHA3-256 — no wasm |
+| `deepseek-web` | chat.deepseek.com | `userToken` (cookie optional) | Web-client headers + auto-generated session cookie + auto token refresh (ported from `xiaoY233/Chat2API`). PoW (DeepSeekHashV1) solved with the official `sha3_wasm_bg.wasm`. Serves **DeepSeek V4.1-Flash** (Instant / Expert modes). |
 | `qwen-web` | chat.qwen.ai | `token` cookie (optionally `token\|ssxmod_itna`) | Anonymous works but is rate-limited; add `-thinking` to a model for reasoning |
 | `claude-web` | claude.ai | `sessionKey\|orgUuid` (optionally `\|cfClearance`) | Cloudflare may require `cf_clearance` as a 3rd field |
 | `gemini-web` | gemini.google.com | Google cookie string (`__Secure-1PSID=…; __Secure-1PSIDTS=…; SAPISID=…`) | Anonymous serves Flash only; cookie unlocks Pro/thinking |
@@ -97,7 +97,17 @@ These were all wrong at first and each one silently broke a feature:
   **type** decides the channel: `THINK` → `reasoning_content`, `RESPONSE` → `content`,
   `SEARCH` → ignored. Continuation frames carry `{v}` with **no** `{p}` (they append to
   the previous path), and `BATCH` frames wrap an array of ops.
-- **`model_type`** — `"default"` | `"expert"` (not `"chat"`/`"reasoner"`).
+- **`model_type`** — `"default"` (Instant) | `"expert"` (Expert) | `"vision"`. **Note
+  (2026-10):** the completion endpoint now *ignores* `model_type` (it echoes
+  `"default"` back for every value) and keys off `thinking_enabled` / `search_enabled`
+  instead — we send all three so it keeps working either way.
+- **Model version** — chat.deepseek.com currently serves **DeepSeek V4.1-Flash**. The
+  web app exposes two modes, `Instant` (non-thinking) and `Expert` (thinking), both on
+  the same model; V4-Pro has been phased out (its requests route to V4.1-Flash). The
+  model's self-reported version is unreliable, so the authoritative source is the web
+  app's `model_configs` feature (fetch it at
+  `GET /api/v0/client/settings?did=<uuid>&scope=model`). Context window is **1M**, not
+  128K — pinned in `PROVIDER_CAPABILITIES["deepseek-web"]`.
 - **Rate limiting** — DeepSeek throttles rapid successive messages and signals it as a
   plain SSE frame `{"type":"error","content":"消息发送过于频繁…","finish_reason":"rate_limit_reached"}`
   (no patch/response body). The parser must surface that as an error, otherwise the
