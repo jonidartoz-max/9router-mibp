@@ -14,6 +14,7 @@ export { default as Sidebar } from "./Sidebar";
 export { default as Header } from "./Header";
 export { default as Footer } from "./Footer";
 export { default as OAuthModal } from "./OAuthModal";
+export { default as WebLoginModal } from "./WebLoginModal";
 export { default as ModelSelectModal } from "./ModelSelectModal";
 export { default as ManualConfigModal } from "./ManualConfigModal";
 export { default as ComboFormModal } from "./ComboFormModal";

@@ -15,7 +15,27 @@ provider inside 9Router — no official API key, no per-token billing. These sit
 
 Aliases: `dsw`, `qw`, `cw`, `gw2`.
 
+## One-click login (no DevTools) ⭐
+
+Every `webCookie` provider now has a **"Login with browser"** button in the Add
+Connection modal. It opens your real browser on the site's login page, you sign in
+normally (password, Google, 2FA — all on the site itself), and 9Router reads the
+resulting cookies + localStorage over the Chrome DevTools Protocol and fills the
+form for you. **No password, token or 2FA code ever passes through 9Router or the
+chat.**
+
+Supported: `deepseek-web`, `qwen-web`, `claude-web`, `gemini-web`, `grok-web`,
+`perplexity-web` (anything in `src/lib/webLogin/sites.js`).
+
+- Needs a Chromium browser installed (Chrome / Edge / Brave / Chromium). Detected
+  automatically; the same profile is reused, so a later login is often instant.
+- Sign-in is detected by asking the site's own API (e.g. `/api/v0/users/current`
+  for DeepSeek) — a guest session is *not* mistaken for a real one.
+- If no browser is found, the manual paste still works exactly as before.
+
 ## How to get each credential (browser DevTools)
+
+*Only needed if you skip the one-click login above.*
 
 - **DeepSeek** — DevTools → Network → click any `/api/v0/…` request → copy the
   `authorization: Bearer …` value (that's the userToken) and the `Cookie` header.

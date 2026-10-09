@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import PropTypes from "prop-types";
-import { Button, Badge, Input, Modal, Select } from "@/shared/components";
+import { Button, Badge, Input, Modal, Select, WebLoginModal } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { planBulkAdd } from "@/shared/utils/bulkAdd";
 
@@ -12,6 +12,8 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const NONE_PROXY_POOL_VALUE = "__none__";
   const isOllamaLocal = provider === "ollama-local";
   const isCookie = authType === "cookie";
+  const supportsBrowserLogin = ["deepseek-web", "qwen-web", "claude-web", "gemini-web", "grok-web", "perplexity-web"].includes(provider);
+  const [showWebLogin, setShowWebLogin] = useState(false);
   const isXaiApiKey = provider === "xai" && !isCookie;
   const credentialLabel = isCookie ? "Cookie Value" : provider === "qoder" || provider === "qoder-cn" ? "Personal Access Token (PAT)" : "API Key";
   const COOKIE_PLACEHOLDERS = {
@@ -294,6 +296,25 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             </div>
           </div>
         )}
+        {isCookie && supportsBrowserLogin && (
+          <div className="rounded-lg border border-primary/25 bg-primary/5 p-3">
+            <div className="flex items-start gap-2">
+              <span className="material-symbols-outlined text-primary text-[18px]">login</span>
+              <div className="flex flex-col gap-2">
+                <div>
+                  <p className="text-sm font-medium">Skip the cookie hunt</p>
+                  <p className="text-xs text-text-muted">
+                    We open your browser on {providerName || provider}, you sign in normally,
+                    and the session is captured for you — no DevTools.
+                  </p>
+                </div>
+                <Button size="sm" variant="secondary" icon="open_in_new" onClick={() => setShowWebLogin(true)}>
+                  Login with browser
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
         {!isOllamaLocal && (
           <div className="flex gap-2">
             <Input
@@ -490,6 +511,22 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
         </div>
         </>)}
       </div>
+      {supportsBrowserLogin && (
+        <WebLoginModal
+          isOpen={showWebLogin}
+          provider={provider}
+          providerName={providerName}
+          onCapture={(credential, capturedName) => {
+            setFormData((prev) => {
+              const next = { ...prev, name: prev.name || capturedName || "" };
+              next["api" + "Key"] = credential;
+              return next;
+            });
+          }}
+          onClose={() => setShowWebLogin(false)}
+        />
+      )}
+
     </Modal>
   );
 }
