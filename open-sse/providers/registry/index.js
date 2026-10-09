@@ -125,9 +125,20 @@ import p119 from "./selfhosted-embedding.js";
 import p120 from "./fish-audio.js";
 import p121 from "./alitp-intl.js";
 import p122 from "./xquik.js";
-import p126 from "./freebuff.js"; // custom MIBP (was p34 pre-0.5.69; p124 taken by qoder-cn)
-import p125 from "./zai.js"; // custom MIBP
-
+import p125 from "./tokenharbor.js";
+import p126 from "./dahl.js";
+import p127 from "./atria.js";
+import p129 from "./agnes.js";
+import p130 from "./bai.js";
+import p131 from "./tinyfish.js";
+import p132 from "./v1m.js";
+import p133 from "./muse.js";
+import p134 from "./minimax-code.js";
+import p135 from "./minimax-code-global.js";
+import p136 from "./bedrock.js";
+import p137 from "./bedrock-xai.js";
+import p138 from "./freebuff.js"; // custom MIBP (renumbered; upstream took p125-p137)
+import p139 from "./zai.js"; // custom MIBP
 export default [
   p0,
   p1,
@@ -163,7 +174,7 @@ export default [
   p31,
   p32,
   p33,
-  p126, // freebuff (custom MIBP)
+  p138, // freebuff (custom MIBP)
   p34,
   p35,
   p36,
@@ -233,7 +244,7 @@ export default [
   p98,
   p99,
   p100,
-  p125, // zai (custom MIBP)
+  p139, // zai (custom MIBP)
   // p102, // trae — hidden, no tool calling
   p103,
   p105,
@@ -255,4 +266,16 @@ export default [
   p120,
   p121,
   p122,
+  p125,
+  p126,
+  p127,
+  p129,
+  p130,
+  p131,
+  p132,
+  p133,
+  p134,
+  p135,
+  p136,
+  p137,
 ];
