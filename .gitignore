@@ -102,3 +102,6 @@ graphify-out/*
 start-dev-silent.cjs
 debug.log
 .refs/
+
+# Local runtime data (contains API keys/sessions)
+.localdata/
