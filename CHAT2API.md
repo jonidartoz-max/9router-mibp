@@ -108,7 +108,9 @@ These were all wrong at first and each one silently broke a feature:
 - **Tool calls** — the model is prompted with the bracket protocol
   (`[function_calls]` / `[call:name]{json}[/call]`); a parser converts the reply into
   OpenAI `tool_calls` with `finish_reason: "tool_calls"` for both streaming and
-  non-streaming. The same builder is shared by qwen/claude/gemini executors.
+  non-streaming. The same builder is shared by **all six web providers**
+  (deepseek/qwen/claude/gemini via `webChatShared.js`; grok-web and perplexity-web
+  use the identical helpers directly).
   - The transcript must **keep the call/result pairing**: a prior assistant
     `tool_calls` is re-rendered as a `[function_calls]` block and each result as
     `[TOOL_RESULT for <id>] <text>`. Without this the model never learns the tool
@@ -117,6 +119,18 @@ These were all wrong at first and each one silently broke a feature:
     directive is appended after the tool instructions ("results are final, answer
     now, do NOT emit another [function_calls] block"). Otherwise the trailing
     "call a tool" instruction wins and the agent loops.
+
+Tool-calling support is verified per provider by an offline test-suite (27 cases)
+plus a live server run for DeepSeek. Coverage matrix:
+
+| Provider | Plain | Tools | Streaming tools | Multi-turn | Status |
+|---|---|---|---|---|---|
+| `deepseek-web` | ✅ | ✅ | ✅ | ✅ | live + offline |
+| `qwen-web` | ✅ | ✅ | ✅ | ✅ | offline (shared builder) |
+| `claude-web` | ✅ | ✅ | ✅ | ✅ | offline (shared builder) |
+| `gemini-web` | ✅ | ✅ | ✅ | ✅ | offline (shared builder) |
+| `grok-web` | ✅ | ✅ | ✅ | ✅ | offline |
+| `perplexity-web` | ✅ | ✅ | ✅ | ✅ | offline |
 
 Verified end-to-end through the running server **and with the real OpenAI SDK**
 (streaming and non-streaming): plain chat, web-search (with `[citation:N]`),

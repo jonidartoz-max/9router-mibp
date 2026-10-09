@@ -2,6 +2,12 @@ import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { SSE_DONE, SSE_HEADERS_NO_BUFFER } from "../utils/sseConstants.js";
 import { sseChunk } from "../utils/sse.js";
+import {
+  extractToolCalls,
+  endsWithToolResult,
+  TOOL_RESULT_FOLLOWUP,
+  messageToText,
+} from "./webChatShared.js";
 
 const PPLX_SSE_ENDPOINT = PROVIDERS["perplexity-web"].baseUrl;
 const PPLX_API_VERSION = "2.18";
@@ -141,14 +147,12 @@ function parseOpenAIMessages(messages) {
   for (const msg of messages) {
     let role = String(msg.role || "user");
     if (role === "developer") role = "system";
-    let content = "";
-    if (typeof msg.content === "string") content = msg.content;
-    else if (Array.isArray(msg.content)) {
-      content = msg.content.filter((c) => c.type === "text").map((c) => String(c.text || "")).join(" ");
-    }
+    // messageToText preserves assistant tool_calls and labels tool results, so the
+    // transcript keeps the call/result pairing (otherwise the model loops).
+    const content = messageToText({ ...msg, role });
     if (!content.trim()) continue;
     if (role === "system") systemMsg += content + "\n";
-    else if (role === "user" || role === "assistant") history.push({ role, content });
+    else if (role === "user" || role === "assistant" || role === "tool") history.push({ role, content });
   }
   let currentMsg = "";
   if (history.length > 0 && history[history.length - 1].role === "user") {
@@ -187,9 +191,17 @@ function formatToolsHint(tools) {
     const fn = t?.function || t || {};
     const name = fn.name || "unnamed";
     const desc = (fn.description || "").split("\n")[0].slice(0, 200);
-    return `- ${name}: ${desc}`;
+    const schema = fn.parameters ? JSON.stringify(fn.parameters) : "{}";
+    return `- ${name}: ${desc}\n    schema: ${schema}`;
   });
-  return `Available tools (reference only, cannot invoke):\n${lines.join("\n")}`;
+  return (
+    "You can invoke the following tools. Tool names are CASE-SENSITIVE.\n" +
+    lines.join("\n") +
+    "\n\nWhen you decide to call a tool, respond with NOTHING except a single [function_calls] block:\n" +
+    '[function_calls]\n[call:exact_tool_name]{"argument":"value"}[/call]\n[/function_calls]\n' +
+    "Use the EXACT tool name; the JSON must be a raw compact object on ONE line; do not wrap it " +
+    "in code fences or add other text. For multiple tools, add several [call:...]...[/call] entries."
+  );
 }
 
 function buildQuery(parsed, followUpUuid, tools) {
@@ -200,6 +212,7 @@ function buildQuery(parsed, followUpUuid, tools) {
   const toolsHint = formatToolsHint(tools);
   if (toolsHint) instr.push(toolsHint);
   instr.push("You have built-in web search. Answer questions directly using search results.");
+  if (toolsHint && endsWithToolResult(parsed.history)) instr.push(TOOL_RESULT_FOLLOWUP.trim());
   obj.instructions = instr;
   if (parsed.history.length > 0) obj.history = parsed.history;
   if (parsed.currentMsg) obj.query = parsed.currentMsg;
@@ -291,10 +304,13 @@ async function* extractContent(eventStream, signal) {
   yield { delta: "", answer: fullAnswer, backendUuid: backendUuid ?? undefined, done: true };
 }
 
-function buildStreamingResponse(eventStream, model, cid, created, history, currentMsg, signal) {
+function buildStreamingResponse(eventStream, model, cid, created, history, currentMsg, signal, tools) {
   const encoder = new TextEncoder();
+  const wantTools = Array.isArray(tools) && tools.length > 0;
   return new ReadableStream({
     async start(controller) {
+      let closed = false;
+      const finish = () => { if (!closed) { closed = true; controller.close(); } };
       try {
         controller.enqueue(encoder.encode(sseChunk({
           id: cid, object: "chat.completion.chunk", created, model, system_fingerprint: null,
@@ -303,6 +319,7 @@ function buildStreamingResponse(eventStream, model, cid, created, history, curre
 
         let fullAnswer = "";
         let respBackendUuid = null;
+        let buffered = "";
 
         for await (const chunk of extractContent(eventStream, signal)) {
           if (chunk.backendUuid) respBackendUuid = chunk.backendUuid;
@@ -325,13 +342,41 @@ function buildStreamingResponse(eventStream, model, cid, created, history, curre
           if (dt) {
             dt = cleanResponse(dt, false);
             if (dt) {
-              controller.enqueue(encoder.encode(sseChunk({
-                id: cid, object: "chat.completion.chunk", created, model, system_fingerprint: null,
-                choices: [{ index: 0, delta: { content: dt }, finish_reason: null, logprobs: null }],
-              })));
+              if (wantTools) { buffered += dt; }
+              else {
+                controller.enqueue(encoder.encode(sseChunk({
+                  id: cid, object: "chat.completion.chunk", created, model, system_fingerprint: null,
+                  choices: [{ index: 0, delta: { content: dt }, finish_reason: null, logprobs: null }],
+                })));
+              }
             }
           }
           if (chunk.answer) fullAnswer = chunk.answer;
+        }
+
+        if (wantTools) {
+          const toolSource = buffered || cleanResponse(fullAnswer);
+          const parsedTools = extractToolCalls(toolSource);
+          if (parsedTools.toolCalls.length) {
+            parsedTools.toolCalls.forEach((tc, i) => {
+              controller.enqueue(encoder.encode(sseChunk({
+                id: cid, object: "chat.completion.chunk", created, model, system_fingerprint: null,
+                choices: [{ index: 0, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.name, arguments: tc.arguments } }] }, finish_reason: null, logprobs: null }],
+              })));
+            });
+            controller.enqueue(encoder.encode(sseChunk({
+              id: cid, object: "chat.completion.chunk", created, model, system_fingerprint: null,
+              choices: [{ index: 0, delta: {}, finish_reason: "tool_calls", logprobs: null }],
+            })));
+            controller.enqueue(encoder.encode(SSE_DONE));
+            return;
+          }
+          if (parsedTools.content) {
+            controller.enqueue(encoder.encode(sseChunk({
+              id: cid, object: "chat.completion.chunk", created, model, system_fingerprint: null,
+              choices: [{ index: 0, delta: { content: parsedTools.content }, finish_reason: null, logprobs: null }],
+            })));
+          }
         }
 
         controller.enqueue(encoder.encode(sseChunk({
@@ -348,13 +393,13 @@ function buildStreamingResponse(eventStream, model, cid, created, history, curre
         })));
         controller.enqueue(encoder.encode(SSE_DONE));
       } finally {
-        controller.close();
+        finish();
       }
     },
   });
 }
 
-async function buildNonStreamingResponse(eventStream, model, cid, created, history, currentMsg, signal) {
+async function buildNonStreamingResponse(eventStream, model, cid, created, history, currentMsg, signal, tools) {
   let fullAnswer = "";
   let respBackendUuid = null;
   const thinkingParts = [];
@@ -374,16 +419,28 @@ async function buildNonStreamingResponse(eventStream, model, cid, created, histo
   fullAnswer = cleanResponse(fullAnswer);
   sessionStore(history, currentMsg, fullAnswer, respBackendUuid);
 
-  const reasoningContent = thinkingParts.length > 0 ? thinkingParts.join("\n") : undefined;
+  const reasoningContent = thinkingParts.length > 0 ? thinkingParts.join("") : undefined;
   const msg = { role: "assistant", content: fullAnswer };
   if (reasoningContent) msg.reasoning_content = reasoningContent;
+
+  let finishReason = "stop";
+  if (Array.isArray(tools) && tools.length > 0 && fullAnswer) {
+    const parsed = extractToolCalls(fullAnswer);
+    if (parsed.toolCalls.length) {
+      msg.content = parsed.content || null;
+      msg.tool_calls = parsed.toolCalls.map((tc) => ({
+        id: tc.id, type: "function", function: { name: tc.name, arguments: tc.arguments },
+      }));
+      finishReason = "tool_calls";
+    }
+  }
 
   const promptTokens = Math.ceil(currentMsg.length / 4);
   const completionTokens = Math.ceil(fullAnswer.length / 4);
 
   return new Response(JSON.stringify({
     id: cid, object: "chat.completion", created, model, system_fingerprint: null,
-    choices: [{ index: 0, message: msg, finish_reason: "stop", logprobs: null }],
+    choices: [{ index: 0, message: msg, finish_reason: finishReason, logprobs: null }],
     usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
   }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
@@ -488,13 +545,13 @@ export class PerplexityWebExecutor extends BaseExecutor {
 
     let finalResponse;
     if (stream) {
-      const sseStream = buildStreamingResponse(response.body, model, cid, created, parsed.history, parsed.currentMsg, signal);
+      const sseStream = buildStreamingResponse(response.body, model, cid, created, parsed.history, parsed.currentMsg, signal, body?.tools);
       finalResponse = new Response(sseStream, {
         status: 200,
         headers: { ...SSE_HEADERS_NO_BUFFER },
       });
     } else {
-      finalResponse = await buildNonStreamingResponse(response.body, model, cid, created, parsed.history, parsed.currentMsg, signal);
+      finalResponse = await buildNonStreamingResponse(response.body, model, cid, created, parsed.history, parsed.currentMsg, signal, body?.tools);
     }
     return { response: finalResponse, url: PPLX_SSE_ENDPOINT, headers, transformedBody: pplxBody };
   }

@@ -2,6 +2,13 @@ import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { SSE_DONE, SSE_HEADERS_NO_BUFFER } from "../utils/sseConstants.js";
 import { sseChunk } from "../utils/sse.js";
+import {
+  formatToolsHint,
+  extractToolCalls,
+  endsWithToolResult,
+  TOOL_RESULT_FOLLOWUP,
+  messageToText,
+} from "./webChatShared.js";
 
 const GROK_CHAT_API = PROVIDERS["grok-web"].baseUrl;
 const GROK_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
@@ -48,14 +55,11 @@ function parseOpenAIMessages(messages) {
   for (const msg of messages) {
     let role = String(msg.role || "user");
     if (role === "developer") role = "system";
-    let content = "";
-    if (typeof msg.content === "string") {
-      content = msg.content;
-    } else if (Array.isArray(msg.content)) {
-      content = msg.content.filter((c) => c.type === "text").map((c) => String(c.text || "")).join(" ");
-    }
-    if (!content.trim()) continue;
-    extracted.push({ role, text: content });
+    // messageToText keeps assistant tool_calls (as a [function_calls] block) and
+    // labels tool results — without this the model re-calls tools forever.
+    const text = messageToText({ ...msg, role });
+    if (!text.trim()) continue;
+    extracted.push({ role, text });
   }
 
   let lastUserIdx = -1;
@@ -132,10 +136,13 @@ async function* extractContent(eventStream, isThinkingModel, signal) {
   yield { done: true, fingerprint, responseId };
 }
 
-function buildStreamingResponse(eventStream, model, cid, created, isThinkingModel, signal) {
+function buildStreamingResponse(eventStream, model, cid, created, isThinkingModel, signal, tools) {
   const encoder = new TextEncoder();
+  const wantTools = Array.isArray(tools) && tools.length > 0;
   return new ReadableStream({
     async start(controller) {
+      let closed = false;
+      const finish = () => { if (!closed) { closed = true; controller.close(); } };
       try {
         controller.enqueue(encoder.encode(sseChunk({
           id: cid, object: "chat.completion.chunk", created, model, system_fingerprint: null,
@@ -143,6 +150,7 @@ function buildStreamingResponse(eventStream, model, cid, created, isThinkingMode
         })));
 
         let fp = "";
+        let buffered = "";
         for await (const chunk of extractContent(eventStream, isThinkingModel, signal)) {
           if (chunk.fingerprint) fp = chunk.fingerprint;
 
@@ -161,10 +169,38 @@ function buildStreamingResponse(eventStream, model, cid, created, isThinkingMode
             continue;
           }
           if (chunk.done) break;
-          if (chunk.delta) {
+          const piece = chunk.fullMessage != null ? chunk.fullMessage : chunk.delta;
+          if (piece != null) {
+            if (wantTools) { buffered += piece; }
+            else {
+              controller.enqueue(encoder.encode(sseChunk({
+                id: cid, object: "chat.completion.chunk", created, model, system_fingerprint: fp || null,
+                choices: [{ index: 0, delta: { content: piece }, finish_reason: null, logprobs: null }],
+              })));
+            }
+          }
+        }
+
+        if (wantTools && buffered) {
+          const { content, toolCalls } = extractToolCalls(buffered);
+          if (toolCalls.length) {
+            toolCalls.forEach((tc, i) => {
+              controller.enqueue(encoder.encode(sseChunk({
+                id: cid, object: "chat.completion.chunk", created, model, system_fingerprint: fp || null,
+                choices: [{ index: 0, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.name, arguments: tc.arguments } }] }, finish_reason: null, logprobs: null }],
+              })));
+            });
             controller.enqueue(encoder.encode(sseChunk({
               id: cid, object: "chat.completion.chunk", created, model, system_fingerprint: fp || null,
-              choices: [{ index: 0, delta: { content: chunk.delta }, finish_reason: null, logprobs: null }],
+              choices: [{ index: 0, delta: {}, finish_reason: "tool_calls", logprobs: null }],
+            })));
+            controller.enqueue(encoder.encode(SSE_DONE));
+            return;
+          }
+          if (content) {
+            controller.enqueue(encoder.encode(sseChunk({
+              id: cid, object: "chat.completion.chunk", created, model, system_fingerprint: fp || null,
+              choices: [{ index: 0, delta: { content }, finish_reason: null, logprobs: null }],
             })));
           }
         }
@@ -181,13 +217,13 @@ function buildStreamingResponse(eventStream, model, cid, created, isThinkingMode
         })));
         controller.enqueue(encoder.encode(SSE_DONE));
       } finally {
-        controller.close();
+        finish();
       }
     },
   });
 }
 
-async function buildNonStreamingResponse(eventStream, model, cid, created, isThinkingModel, signal) {
+async function buildNonStreamingResponse(eventStream, model, cid, created, isThinkingModel, signal, tools) {
   let fullContent = "";
   let fingerprint = "";
   const thinkingParts = [];
@@ -201,19 +237,31 @@ async function buildNonStreamingResponse(eventStream, model, cid, created, isThi
     }
     if (chunk.thinking) { thinkingParts.push(chunk.thinking); continue; }
     if (chunk.done) break;
-    if (chunk.fullMessage) fullContent = chunk.fullMessage;
+    if (chunk.fullMessage != null) fullContent = chunk.fullMessage;
     else if (chunk.delta) fullContent += chunk.delta;
   }
 
   const msg = { role: "assistant", content: fullContent };
-  if (thinkingParts.length > 0) msg.reasoning_content = thinkingParts.join("\n");
+  if (thinkingParts.length > 0) msg.reasoning_content = thinkingParts.join("");
+
+  let finishReason = "stop";
+  if (Array.isArray(tools) && tools.length > 0 && fullContent) {
+    const parsed = extractToolCalls(fullContent);
+    if (parsed.toolCalls.length) {
+      msg.content = parsed.content || null;
+      msg.tool_calls = parsed.toolCalls.map((tc) => ({
+        id: tc.id, type: "function", function: { name: tc.name, arguments: tc.arguments },
+      }));
+      finishReason = "tool_calls";
+    }
+  }
 
   const promptTokens = Math.ceil(fullContent.length / 4);
   const completionTokens = Math.ceil(fullContent.length / 4);
 
   return new Response(JSON.stringify({
     id: cid, object: "chat.completion", created, model, system_fingerprint: fingerprint || null,
-    choices: [{ index: 0, message: msg, finish_reason: "stop", logprobs: null }],
+    choices: [{ index: 0, message: msg, finish_reason: finishReason, logprobs: null }],
     usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
   }), { status: 200, headers: { "Content-Type": "application/json" } });
 }
@@ -244,8 +292,15 @@ export class GrokWebExecutor extends BaseExecutor {
       return { response: errResp, url: GROK_CHAT_API, headers: {}, transformedBody: body };
     }
 
+    // Tool support: append the bracket protocol, and when the transcript already
+    // ends with tool results, tell the model to answer instead of re-calling.
+    const toolsHint = formatToolsHint(body?.tools);
+    const prompt = message
+      + (toolsHint || "")
+      + (toolsHint && endsWithToolResult(messages) ? TOOL_RESULT_FOLLOWUP : "");
+
     const grokPayload = {
-      temporary: true, modelName: grokModel, modelMode, message,
+      temporary: true, modelName: grokModel, modelMode, message: prompt,
       fileAttachments: [], imageAttachments: [],
       disableSearch: false, enableImageGeneration: false, returnImageBytes: false,
       returnRawGrokInXaiRequest: false, enableImageStreaming: false, imageGenerationCount: 0,
@@ -328,13 +383,13 @@ export class GrokWebExecutor extends BaseExecutor {
 
     let finalResponse;
     if (stream) {
-      const sseStream = buildStreamingResponse(response.body, model, cid, created, isThinking, signal);
+      const sseStream = buildStreamingResponse(response.body, model, cid, created, isThinking, signal, body?.tools);
       finalResponse = new Response(sseStream, {
         status: 200,
         headers: { ...SSE_HEADERS_NO_BUFFER },
       });
     } else {
-      finalResponse = await buildNonStreamingResponse(response.body, model, cid, created, isThinking, signal);
+      finalResponse = await buildNonStreamingResponse(response.body, model, cid, created, isThinking, signal, body?.tools);
     }
     return { response: finalResponse, url: GROK_CHAT_API, headers, transformedBody: grokPayload };
   }
