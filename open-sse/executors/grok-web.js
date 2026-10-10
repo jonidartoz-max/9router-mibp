@@ -9,6 +9,7 @@ import {
   TOOL_RESULT_FOLLOWUP,
   messageToText,
 } from "./webChatShared.js";
+import { acquire, noteOutcome, classifyUpstream, releaseOnStream } from "./webPacer.js";
 
 const GROK_CHAT_API = PROVIDERS["grok-web"].baseUrl;
 const GROK_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
@@ -362,12 +363,16 @@ export class GrokWebExecutor extends BaseExecutor {
 
     log?.info?.("GROK-WEB", `Query to ${model} (grok=${grokModel}, mode=${modelMode}), len=${message.length}`);
 
+    const credential = credentials?.apiKey || credentials?.accessToken || "";
+    const release = await acquire("grok-web", credential);
+
     let response;
     try {
       response = await fetch(GROK_CHAT_API, {
         method: "POST", headers, body: JSON.stringify(grokPayload), signal,
       });
     } catch (err) {
+      release();
       log?.error?.("GROK-WEB", `Fetch failed: ${err.message || String(err)}`);
       const errResp = new Response(JSON.stringify({
         error: { message: `Grok connection failed: ${err.message || String(err)}`, type: "upstream_error" },
@@ -380,6 +385,11 @@ export class GrokWebExecutor extends BaseExecutor {
       let errMsg = `Grok returned HTTP ${status}`;
       if (status === 401 || status === 403) errMsg = "Grok auth failed — SSO cookie may be expired. Re-paste your sso cookie value from grok.com.";
       else if (status === 429) errMsg = "Grok rate limited. Wait a moment and retry, or rotate cookies.";
+      const bodyText = await response.text().catch(() => "");
+      const kind = classifyUpstream(status, bodyText);
+      if (kind) noteOutcome("grok-web", credential, kind, `HTTP ${status}`);
+      if (kind === "suspended") errMsg = "Grok reports this account as SUSPENDED — requests are paused for 30 min.";
+      release();
       log?.warn?.("GROK-WEB", errMsg);
       const errResp = new Response(JSON.stringify({
         error: { message: errMsg, type: "upstream_error", code: `HTTP_${status}` },
@@ -388,24 +398,27 @@ export class GrokWebExecutor extends BaseExecutor {
     }
 
     if (!response.body) {
+      release();
       const errResp = new Response(JSON.stringify({
         error: { message: "Grok returned empty response body", type: "upstream_error" },
       }), { status: 502, headers: { "Content-Type": "application/json" } });
       return { response: errResp, url: GROK_CHAT_API, headers, transformedBody: grokPayload };
     }
 
+    noteOutcome("grok-web", credential, "ok");
+
     const cid = `chatcmpl-grok-${crypto.randomUUID().slice(0, 12)}`;
     const created = Math.floor(Date.now() / 1000);
 
     let finalResponse;
     if (stream) {
-      const sseStream = buildStreamingResponse(response.body, model, cid, created, isThinking, signal, body?.tools);
+      const sseStream = buildStreamingResponse(releaseOnStream(response.body, release), model, cid, created, isThinking, signal, body?.tools);
       finalResponse = new Response(sseStream, {
         status: 200,
         headers: { ...SSE_HEADERS_NO_BUFFER },
       });
     } else {
-      finalResponse = await buildNonStreamingResponse(response.body, model, cid, created, isThinking, signal, body?.tools);
+      finalResponse = await buildNonStreamingResponse(releaseOnStream(response.body, release), model, cid, created, isThinking, signal, body?.tools);
     }
     return { response: finalResponse, url: GROK_CHAT_API, headers, transformedBody: grokPayload };
   }

@@ -8,6 +8,7 @@ import {
   TOOL_RESULT_FOLLOWUP,
   messageToText,
 } from "./webChatShared.js";
+import { acquire, noteOutcome, classifyUpstream, releaseOnStream } from "./webPacer.js";
 
 const PPLX_SSE_ENDPOINT = PROVIDERS["perplexity-web"].baseUrl;
 const PPLX_API_VERSION = "2.18";
@@ -533,6 +534,9 @@ export class PerplexityWebExecutor extends BaseExecutor {
 
     log?.info?.("PPLX-WEB", `Query to ${model} (pref=${modelPref}, mode=${pplxMode}), len=${query.length}`);
 
+    const credential = credentials?.accessToken || credentials?.apiKey || "";
+    const release = await acquire("perplexity-web", credential);
+
     const fetchOptions = { method: "POST", headers, body: JSON.stringify(pplxBody) };
     if (signal) fetchOptions.signal = signal;
 
@@ -540,6 +544,7 @@ export class PerplexityWebExecutor extends BaseExecutor {
     try {
       response = await fetch(PPLX_SSE_ENDPOINT, fetchOptions);
     } catch (err) {
+      release();
       log?.error?.("PPLX-WEB", `Fetch failed: ${err.message || String(err)}`);
       const errResp = new Response(JSON.stringify({
         error: { message: `Perplexity connection failed: ${err.message || String(err)}`, type: "upstream_error" },
@@ -552,6 +557,11 @@ export class PerplexityWebExecutor extends BaseExecutor {
       let errMsg = `Perplexity returned HTTP ${status}`;
       if (status === 401 || status === 403) errMsg = "Perplexity auth failed — session cookie may be expired. Re-paste your __Secure-next-auth.session-token.";
       else if (status === 429) errMsg = "Perplexity rate limited. Wait a moment and retry.";
+      const bodyText = await response.text().catch(() => "");
+      const kind = classifyUpstream(status, bodyText);
+      if (kind) noteOutcome("perplexity-web", credential, kind, `HTTP ${status}`);
+      if (kind === "suspended") errMsg = "Perplexity reports this account as SUSPENDED — requests are paused for 30 min.";
+      release();
       log?.warn?.("PPLX-WEB", errMsg);
       const errResp = new Response(JSON.stringify({
         error: { message: errMsg, type: "upstream_error", code: `HTTP_${status}` },
@@ -560,24 +570,28 @@ export class PerplexityWebExecutor extends BaseExecutor {
     }
 
     if (!response.body) {
+      release();
       const errResp = new Response(JSON.stringify({
         error: { message: "Perplexity returned empty response body", type: "upstream_error" },
       }), { status: 502, headers: { "Content-Type": "application/json" } });
       return { response: errResp, url: PPLX_SSE_ENDPOINT, headers, transformedBody: pplxBody };
     }
 
+    noteOutcome("perplexity-web", credential, "ok");
+
     const cid = `chatcmpl-pplx-${crypto.randomUUID().slice(0, 12)}`;
     const created = Math.floor(Date.now() / 1000);
 
+    const pacedBody = releaseOnStream(response.body, release);
     let finalResponse;
     if (stream) {
-      const sseStream = buildStreamingResponse(response.body, model, cid, created, parsed.history, parsed.currentMsg, signal, body?.tools);
+      const sseStream = buildStreamingResponse(pacedBody, model, cid, created, parsed.history, parsed.currentMsg, signal, body?.tools);
       finalResponse = new Response(sseStream, {
         status: 200,
         headers: { ...SSE_HEADERS_NO_BUFFER },
       });
     } else {
-      finalResponse = await buildNonStreamingResponse(response.body, model, cid, created, parsed.history, parsed.currentMsg, signal, body?.tools);
+      finalResponse = await buildNonStreamingResponse(pacedBody, model, cid, created, parsed.history, parsed.currentMsg, signal, body?.tools);
     }
     return { response: finalResponse, url: PPLX_SSE_ENDPOINT, headers, transformedBody: pplxBody };
   }

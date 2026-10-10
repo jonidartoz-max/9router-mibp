@@ -22,6 +22,10 @@ async function hasValidCliToken(request) {
 // Public API paths — no auth required (LLM API has its own key auth inside handler).
 const PUBLIC_API_PATHS = [
   "/api/health",
+  // Per-account pacing/health ledger for web-cookie providers. Exposes only
+  // hashed account fingerprints + status (never a cookie/token), so it is safe
+  // to read without dashboard auth — same exposure class as /api/health.
+  "/api/web-health",
   "/api/init",
   "/api/locale",
   "/api/auth/login",

@@ -34,6 +34,7 @@ import {
   buildNonStreamingResponse,
   readLines,
 } from "./webChatShared.js";
+import { acquire, noteOutcome, classifyUpstream, pacedStream } from "./webPacer.js";
 
 const HOST = "chat.deepseek.com";
 const BASE = `https://${HOST}`;
@@ -398,6 +399,11 @@ export class DeepSeekWebExecutor extends BaseExecutor {
       return { response: badRequest("DeepSeek Web needs a userToken (localStorage) — cookie is optional"), url: COMPLETION, headers: {}, transformedBody: body };
     }
 
+    const credential = credentials?.apiKey || credentials?.accessToken || "";
+    // Pace the WHOLE flow (token refresh + session create + PoW + completion)
+    // so handshake calls count against the account's budget too.
+    const release = await acquire("deepseek-web", credential);
+
     // Refresh the token; fall back to the raw value if the exchange fails.
     const userToken = userTokenRaw ? await refreshAccessToken(userTokenRaw, signal, log) : "";
 
@@ -408,6 +414,7 @@ export class DeepSeekWebExecutor extends BaseExecutor {
     if (toolsHint) prompt += toolsHint;
     if (endsWithToolResult(parsed.items)) prompt += TOOL_RESULT_FOLLOWUP;
     if (!prompt.trim()) {
+      release();
       return { response: badRequest("Empty query after processing"), url: COMPLETION, headers: {}, transformedBody: body };
     }
 
@@ -425,6 +432,7 @@ export class DeepSeekWebExecutor extends BaseExecutor {
       sessionId = await createSession(authHeaders, signal);
       powHeader = await getPowHeader(authHeaders, signal, log);
     } catch (err) {
+      release();
       log?.error?.("DEEPSEEK-WEB", `Handshake failed: ${err.message || String(err)}`);
       return { response: jsonError(`DeepSeek handshake failed: ${err.message || String(err)}`, err.status || 502, "UPSTREAM_ERROR"), url: COMPLETION, headers: authHeaders, transformedBody: body };
     }
@@ -449,6 +457,7 @@ export class DeepSeekWebExecutor extends BaseExecutor {
     try {
       response = await fetch(COMPLETION, { method: "POST", headers, body: JSON.stringify(payload), signal });
     } catch (err) {
+      release();
       return { response: jsonError(`DeepSeek connection failed: ${err.message || String(err)}`), url: COMPLETION, headers, transformedBody: payload };
     }
 
@@ -458,13 +467,21 @@ export class DeepSeekWebExecutor extends BaseExecutor {
       if (status === 401 || status === 403) msg = "DeepSeek auth failed — userToken/cookie expired. Re-paste from chat.deepseek.com.";
       else if (status === 429) msg = "DeepSeek rate limited. Wait and retry.";
       else if (status === 400) msg = "DeepSeek rejected the request (PoW or session may be stale). Retry once.";
+      const bodyText = await response.text().catch(() => "");
+      const kind = classifyUpstream(status, bodyText);
+      if (kind) noteOutcome("deepseek-web", credential, kind, `HTTP ${status}`);
+      if (kind === "suspended") msg = "DeepSeek reports this account as SUSPENDED — check the account page; requests are paused for 30 min.";
+      release();
       log?.warn?.("DEEPSEEK-WEB", msg);
       return { response: jsonError(msg, status, `HTTP_${status}`), url: COMPLETION, headers, transformedBody: payload };
     }
 
     if (!response.body) {
+      release();
       return { response: jsonError("DeepSeek returned an empty body"), url: COMPLETION, headers, transformedBody: payload };
     }
+
+    noteOutcome("deepseek-web", credential, "ok");
 
     // Best-effort cleanup so the throwaway conversation never shows in the sidebar.
     const cleanup = () => {
@@ -474,10 +491,10 @@ export class DeepSeekWebExecutor extends BaseExecutor {
     };
 
     if (stream) {
-      const { response: sseResponse } = buildStreamingResponse(extractContent(response.body, signal), model, signal, body?.tools);
+      const { response: sseResponse } = buildStreamingResponse(pacedStream(extractContent(response.body, signal), release), model, signal, body?.tools);
       return { response: sseResponse, url: COMPLETION, headers, transformedBody: payload, onComplete: cleanup };
     }
-    const finalResponse = await buildNonStreamingResponse(extractContent(response.body, signal), model, signal, body?.tools);
+    const finalResponse = await buildNonStreamingResponse(pacedStream(extractContent(response.body, signal), release), model, signal, body?.tools);
     cleanup();
     return { response: finalResponse, url: COMPLETION, headers, transformedBody: payload };
   }

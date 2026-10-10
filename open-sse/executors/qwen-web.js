@@ -27,6 +27,7 @@ import {
   buildNonStreamingResponse,
   readLines,
 } from "./webChatShared.js";
+import { acquire, noteOutcome, classifyUpstream, pacedStream } from "./webPacer.js";
 
 const BASE = "https://chat.qwen.ai";
 const NEW_CHAT = `${BASE}/api/v2/chats/new`;
@@ -148,6 +149,8 @@ export class QwenWebExecutor extends BaseExecutor {
       return { response: badRequest("Empty query after processing"), url: COMPLETIONS, headers, transformedBody: body };
     }
 
+    // Pace the whole flow so the chat-create handshake counts too.
+    const release = await acquire("qwen-web", credential);
     const chatId = await createChat(headers, upstreamModel, signal, log);
     const url = chatId ? `${COMPLETIONS}?chat_id=${chatId}` : COMPLETIONS;
 
@@ -176,6 +179,7 @@ export class QwenWebExecutor extends BaseExecutor {
     try {
       response = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload), signal });
     } catch (err) {
+      release();
       return { response: jsonError(`Qwen connection failed: ${err.message || String(err)}`), url, headers, transformedBody: payload };
     }
 
@@ -184,19 +188,27 @@ export class QwenWebExecutor extends BaseExecutor {
       let msg = `Qwen returned HTTP ${status}`;
       if (status === 401 || status === 403) msg = "Qwen auth failed — the `token` cookie may be expired. Re-paste it from chat.qwen.ai.";
       else if (status === 429) msg = "Qwen rate limited. Wait and retry (or add a signed-in cookie).";
+      const bodyText = await response.text().catch(() => "");
+      const kind = classifyUpstream(status, bodyText);
+      if (kind) noteOutcome("qwen-web", credential, kind, `HTTP ${status}`);
+      if (kind === "suspended") msg = "Qwen reports this account as SUSPENDED — requests are paused for 30 min.";
+      release();
       log?.warn?.("QWEN-WEB", msg);
       return { response: jsonError(msg, status, `HTTP_${status}`), url, headers, transformedBody: payload };
     }
 
     if (!response.body) {
+      release();
       return { response: jsonError("Qwen returned an empty body"), url, headers, transformedBody: payload };
     }
 
+    noteOutcome("qwen-web", credential, "ok");
+
     if (stream) {
-      const { response: sseResponse } = buildStreamingResponse(extractContent(response.body, signal), model, signal, body?.tools);
+      const { response: sseResponse } = buildStreamingResponse(pacedStream(extractContent(response.body, signal), release), model, signal, body?.tools);
       return { response: sseResponse, url, headers, transformedBody: payload };
     }
-    const finalResponse = await buildNonStreamingResponse(extractContent(response.body, signal), model, signal, body?.tools);
+    const finalResponse = await buildNonStreamingResponse(pacedStream(extractContent(response.body, signal), release), model, signal, body?.tools);
     return { response: finalResponse, url, headers, transformedBody: payload };
   }
 }

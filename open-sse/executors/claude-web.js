@@ -31,6 +31,7 @@ import {
   buildNonStreamingResponse,
   readLines,
 } from "./webChatShared.js";
+import { acquire, noteOutcome, classifyUpstream, pacedStream } from "./webPacer.js";
 
 const BASE = "https://claude.ai";
 const UA =
@@ -140,7 +141,7 @@ export class ClaudeWebExecutor extends BaseExecutor {
 
     const { headers, sessionKey, orgId: providedOrg } = buildHeaders(credentials?.apiKey || credentials?.accessToken || "");
     if (!sessionKey) {
-      return { response: badRequest("Claude Web needs the sessionKey cookie (sk-ant-sid02-…)"), url: BASE, headers, transformedBody: body };
+      return { response: badRequest("Claude Web needs the sessionKey cookie («redacted:sk-…»…)"), url: BASE, headers, transformedBody: body };
     }
 
     const upstreamModel = MODEL_MAP[model] || model || "claude-sonnet-4-6";
@@ -153,8 +154,14 @@ export class ClaudeWebExecutor extends BaseExecutor {
       return { response: badRequest("Empty query after processing"), url: BASE, headers, transformedBody: body };
     }
 
+    // Pace the WHOLE flow (org resolve + conversation create + completion) so
+    // pre-flight handshake calls are counted against the account too.
+    const credential = credentials?.apiKey || credentials?.accessToken || "";
+    const release = await acquire("claude-web", credential);
+
     const orgId = await resolveOrg(headers, providedOrg, signal);
     if (!orgId) {
+      release();
       return {
         response: jsonError("Claude Web could not resolve the organization — sessionKey may be expired, or pass it explicitly as \"sessionKey|orgUuid\"."),
         url: BASE, headers, transformedBody: body,
@@ -165,9 +172,12 @@ export class ClaudeWebExecutor extends BaseExecutor {
     try {
       convId = await createConversation(headers, orgId, upstreamModel, signal);
     } catch (err) {
+      release();
       return { response: jsonError(`Claude conversation create failed: ${err.message || String(err)}`), url: BASE, headers, transformedBody: body };
     }
     if (!convId) {
+      noteOutcome("claude-web", credential, "auth_fail", "conversation create refused (sessionKey/cf_clearance)");
+      release();
       return { response: jsonError("Claude refused to create a conversation — sessionKey/cf_clearance likely expired."), url: BASE, headers, transformedBody: body };
     }
 
@@ -188,6 +198,7 @@ export class ClaudeWebExecutor extends BaseExecutor {
     try {
       response = await fetch(url, { method: "POST", headers, body: JSON.stringify(payload), signal });
     } catch (err) {
+      release();
       return { response: jsonError(`Claude connection failed: ${err.message || String(err)}`), url, headers, transformedBody: payload };
     }
 
@@ -196,13 +207,21 @@ export class ClaudeWebExecutor extends BaseExecutor {
       let msg = `Claude returned HTTP ${status}`;
       if (status === 401 || status === 403) msg = "Claude auth failed — sessionKey (and cf_clearance if Cloudflare challenges) may be expired.";
       else if (status === 429) msg = "Claude rate limited. Wait and retry.";
+      const bodyText = await response.text().catch(() => "");
+      const kind = classifyUpstream(status, bodyText);
+      if (kind) noteOutcome("claude-web", credential, kind, `HTTP ${status}`);
+      if (kind === "suspended") msg = "Claude reports this account as SUSPENDED — requests are paused for 30 min.";
+      release();
       log?.warn?.("CLAUDE-WEB", msg);
       return { response: jsonError(msg, status, `HTTP_${status}`), url, headers, transformedBody: payload };
     }
 
     if (!response.body) {
+      release();
       return { response: jsonError("Claude returned an empty body"), url, headers, transformedBody: payload };
     }
+
+    noteOutcome("claude-web", credential, "ok");
 
     // Best-effort cleanup so the throwaway conversation never lingers in the sidebar.
     const cleanup = () => {
@@ -210,10 +229,10 @@ export class ClaudeWebExecutor extends BaseExecutor {
     };
 
     if (stream) {
-      const { response: sseResponse } = buildStreamingResponse(extractContent(response.body, signal), model, signal, body?.tools);
+      const { response: sseResponse } = buildStreamingResponse(pacedStream(extractContent(response.body, signal), release), model, signal, body?.tools);
       return { response: sseResponse, url, headers, transformedBody: payload, onComplete: cleanup };
     }
-    const finalResponse = await buildNonStreamingResponse(extractContent(response.body, signal), model, signal, body?.tools);
+    const finalResponse = await buildNonStreamingResponse(pacedStream(extractContent(response.body, signal), release), model, signal, body?.tools);
     cleanup();
     return { response: finalResponse, url, headers, transformedBody: payload };
   }

@@ -30,6 +30,7 @@ import {
   buildStreamingResponse,
   buildNonStreamingResponse,
 } from "./webChatShared.js";
+import { acquire, noteOutcome, classifyUpstream, pacedStream } from "./webPacer.js";
 
 const BASE = "https://gemini.google.com";
 const APP = `${BASE}/app`;
@@ -181,9 +182,16 @@ async function* streamGemini(prompt, modeCategory, cookie, signal, log) {
   }
 
   if (!res.ok) {
-    yield { error: `Gemini returned HTTP ${res.status}${res.status === 401 || res.status === 403 ? " — cookie may be expired" : ""}` };
+    const bodyText = await res.text().catch(() => "");
+    const kind = classifyUpstream(res.status, bodyText);
+    if (kind) noteOutcome("gemini-web", cookie, kind, `HTTP ${res.status}`);
+    const extra = kind === "suspended" ? " — account reported SUSPENDED"
+      : (res.status === 401 || res.status === 403) ? " — cookie may be expired" : "";
+    yield { error: `Gemini returned HTTP ${res.status}${extra}` };
     return;
   }
+
+  noteOutcome("gemini-web", cookie, "ok");
 
   const raw = await res.text();
   const frames = parseFrames(raw);
@@ -225,7 +233,8 @@ export class GeminiWebExecutor extends BaseExecutor {
 
     log?.info?.("GEMINI-WEB", `Query ${model} (mode=${modeCategory}, auth=${cookie ? "cookie" : "anon"}), len=${prompt.length}`);
 
-    const gen = streamGemini(prompt, modeCategory, cookie, signal, log);
+    const release = await acquire("gemini-web", cookie);
+    const gen = pacedStream(streamGemini(prompt, modeCategory, cookie, signal, log), release);
     if (stream) {
       const { response: sseResponse } = buildStreamingResponse(gen, model, signal, body?.tools);
       return { response: sseResponse, url: STREAM_GEN, headers: {}, transformedBody: body };

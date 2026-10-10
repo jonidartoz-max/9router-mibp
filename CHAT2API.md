@@ -183,3 +183,34 @@ site changes its protocol or anti-bot rules:
 
 Treat all four as **best-effort**. They are opt-in per connection; a broken one never
 affects the standard API-key providers.
+
+## Anti-ban layer (webPacer)
+
+`open-sse/executors/webPacer.js` wraps every web-cookie executor so each account
+behaves like a polite client instead of a bot spraying requests. It does **not**
+do evasion (no fingerprint/proxy/UA rotation) — that gets accounts banned faster.
+
+What it enforces, per `(provider, account)`:
+
+| Behaviour | Why | Knob (env) |
+|---|---|---|
+| **One in-flight request** | agent tool-loops and parallel clients used to fire N concurrent calls | — |
+| **Min gap + jitter** | kills the machine-gun cadence | `WEB_PACE_MIN_INTERVAL_MS` (2500), `WEB_PACE_JITTER_MS` (1500) |
+| **429 cooldown** | stops re-triggering the limiter right after a 429 | `WEB_PACE_COOLDOWN_MS` (90000) |
+| **Suspension parking** | parks an account for 30 min if the body says "suspended/banned" | — |
+| **Watchdog** | force-releases a slot if a request wedges | `WEB_PACE_MAX_HOLD_MS` (300000) |
+
+The pacer covers the **whole flow**, including pre-flight handshakes (DeepSeek
+token-refresh + session-create + PoW, Qwen chat-create, Claude org-resolve +
+conversation-create), so those count against the account too.
+
+**Health ledger** — `GET /api/web-health` returns each account's status
+(`ok` / `rate_limited` / `auth_failed` / `suspended`), cooldown remaining, and
+recent events. Credentials are hashed (`sha256` → 12-char fingerprint), so the
+endpoint never leaks a cookie or token. Filter with `?provider=deepseek-web`.
+Use it to re-paste a cookie **before** the account is suspended, not after.
+
+> Honest caveat: pacing **reduces** suspension risk, it does not eliminate it.
+> Wrapping a free web session as an API still violates each site's ToS. For
+> production workloads that must not die, use the official paid API.
+
