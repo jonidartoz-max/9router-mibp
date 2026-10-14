@@ -201,14 +201,26 @@ function buildPrompt(items) {
 let _wasmPath = null;
 function wasmPath() {
   if (_wasmPath) return _wasmPath;
+  // 1) Normal (unbundled / dev) resolution relative to this module.
   try {
-    _wasmPath = fileURLToPath(new URL("./sha3_wasm_bg.wasm", import.meta.url));
+    const p = fileURLToPath(new URL("./sha3_wasm_bg.wasm", import.meta.url));
+    if (fs.existsSync(p)) return (_wasmPath = p);
   } catch {
-    // Bundled build: `import.meta.url` was rewritten, so fall back to the
-    // file's real location on disk (kept in sync by the Dockerfile COPY).
-    _wasmPath = path.join(process.cwd(), "open-sse", "executors", "sha3_wasm_bg.wasm");
+    // Bundler rewrote import.meta.url — fall through to the filesystem probe.
   }
-  return _wasmPath;
+  // 2) Bundled build: import.meta.url no longer points here. Probe the known
+  //    on-disk locations (the Dockerfile COPYs the whole open-sse/ tree, so
+  //    cwd/open-sse/executors is the reliable path in the container).
+  const candidates = [
+    path.join(process.cwd(), "open-sse", "executors", "sha3_wasm_bg.wasm"),
+    path.join(process.cwd(), "node_modules", "9router", "open-sse", "executors", "sha3_wasm_bg.wasm"),
+    path.join(process.cwd(), "..", "open-sse", "executors", "sha3_wasm_bg.wasm"),
+  ];
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) return (_wasmPath = c); } catch { /* keep probing */ }
+  }
+  // Last resort: the first candidate, so the error message points somewhere useful.
+  return (_wasmPath = candidates[0]);
 }
 
 let wasmExports = null;
