@@ -19,15 +19,20 @@ ARG NPM_REGISTRY
 
 RUN apk add --no-cache python3 make g++ linux-headers
 
-COPY package.json ./
+COPY package.json package-lock.json ./
 # NOTE (MIBP): no --mount cache — Railway builder rejects cache mounts
-RUN npm install \
-      --registry="${NPM_REGISTRY}" \
-      --fetch-retries=5 \
-      --fetch-retry-factor=2 \
-      --fetch-retry-mintimeout=10000 \
-      --fetch-retry-maxtimeout=120000 \
-      --fetch-timeout=300000
+# Install from the lockfile so the build pins the exact versions verified
+# locally (notably Next 16.3.0). Installing straight from package.json resolved
+# `next: ^16.1.6` to a newer 16.x whose webpack rewrite of `import.meta.url`
+# broke the build while collecting page data. Fall back to `npm install` when
+# the lockfile can't be used as-is (e.g. platform-specific optional deps).
+RUN NPM_ARGS="--registry=${NPM_REGISTRY} --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --fetch-timeout=300000"; \
+    if [ -f package-lock.json ] && npm ci $NPM_ARGS; then \
+      echo "deps installed via npm ci (lockfile pinned)"; \
+    else \
+      echo "npm ci unavailable/failed — falling back to npm install"; \
+      npm install $NPM_ARGS; \
+    fi
 
 COPY . ./
 ENV NEXT_TELEMETRY_DISABLED=1

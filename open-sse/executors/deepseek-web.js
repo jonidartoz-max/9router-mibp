@@ -18,6 +18,7 @@
 
 import crypto from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
@@ -190,7 +191,25 @@ function buildPrompt(items) {
 // The challenge is NOT a plain SHA3-256 preimage search — the server validates a
 // hash the official `sha3_wasm_bg.wasm` computes. A naive SHA3 loop returns
 // INVALID_POW_RESPONSE (40301). This loads the real module once and reuses it.
-const WASM_PATH = fileURLToPath(new URL("./sha3_wasm_bg.wasm", import.meta.url));
+//
+// The wasm path is resolved lazily (inside loadWasm) rather than at module
+// scope. Next/webpack rewrites `import.meta.url` during bundling; evaluating
+// `fileURLToPath(new URL(..., import.meta.url))` at import time made the build
+// crash with `ERR_INVALID_ARG_TYPE: The "path" argument must be of type string
+// or an instance of URL. Received an instance of URL` while collecting page
+// data for any route that transitively imports this module.
+let _wasmPath = null;
+function wasmPath() {
+  if (_wasmPath) return _wasmPath;
+  try {
+    _wasmPath = fileURLToPath(new URL("./sha3_wasm_bg.wasm", import.meta.url));
+  } catch {
+    // Bundled build: `import.meta.url` was rewritten, so fall back to the
+    // file's real location on disk (kept in sync by the Dockerfile COPY).
+    _wasmPath = path.join(process.cwd(), "open-sse", "executors", "sha3_wasm_bg.wasm");
+  }
+  return _wasmPath;
+}
 
 let wasmExports = null;
 let wasmMem = null;
@@ -198,7 +217,7 @@ let wasmOffset = 0;
 
 async function loadWasm() {
   if (wasmExports) return wasmExports;
-  const bytes = fs.readFileSync(WASM_PATH);
+  const bytes = fs.readFileSync(wasmPath());
   const { instance } = await WebAssembly.instantiate(bytes, { wbg: {} });
   wasmExports = instance.exports;
   return wasmExports;
