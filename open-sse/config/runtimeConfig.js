@@ -82,6 +82,15 @@ export const DEFAULT_RETRY_CONFIG = {
   504: { attempts: 2, delayMs: 3000 }
 };
 
+// Total number of transport-level (never reached the provider) attempts one
+// executor call may make across every URL. The status ladder above is per-URL,
+// so a network error that reuses it multiplies the connect timeout by
+// (1 + attempts) per URL: with a 60s FETCH_CONNECT_TIMEOUT_MS and the 502 entry
+// that is ~4 minutes of grinding before the caller even sees an error. One
+// retry is enough to ride out a reset socket; beyond that the route is down and
+// the caller should be told.
+export const DEFAULT_NETWORK_RETRY_BUDGET = 1;
+
 // Normalize a retry entry to { attempts, delayMs }
 export function resolveRetryEntry(entry) {
   if (entry == null) return { attempts: 0, delayMs: RETRY_CONFIG.delayMs };

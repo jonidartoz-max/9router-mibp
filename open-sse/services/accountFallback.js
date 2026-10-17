@@ -1,4 +1,4 @@
-import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS } from "../config/errorConfig.js";
+import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS, isTransportError } from "../config/errorConfig.js";
 
 /**
  * Calculate exponential backoff cooldown for rate limits (429)
@@ -24,6 +24,15 @@ export function checkFallbackError(status, errorText, backoffLevel = 0, provider
   const lowerError = errorText
     ? (typeof errorText === "string" ? errorText : JSON.stringify(errorText)).toLowerCase()
     : "";
+
+  // Transport failures are checked before the text rules: "fetch failed (cause:
+  // UND_ERR_CONNECT_TIMEOUT)" contains no quota wording, so it would otherwise
+  // fall through to the transient default and cool a credential that was never
+  // contacted. Still `shouldFallback` — the request has to move to the next
+  // account/URL — but with 0 cooldown, so the connection stays in rotation.
+  if (isTransportError(errorText)) {
+    return { shouldFallback: true, cooldownMs: 0 };
+  }
 
   for (const rule of ERROR_RULES) {
     if (rule.provider && rule.provider !== provider) continue;

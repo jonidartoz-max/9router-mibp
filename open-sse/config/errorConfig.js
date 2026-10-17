@@ -84,3 +84,69 @@ export const COOLDOWN_MS = {
   transient: TRANSIENT_COOLDOWN_MS,
   requestNotAllowed: COOLDOWN.short,
 };
+
+/**
+ * Transport failures: the request never reached the provider's application.
+ *
+ * These are socket/DNS/connect errors (raised by undici as `TypeError: fetch
+ * failed` with a `cause.code`, or by Node as a bare errno). They say nothing
+ * about the credential: the account was never asked anything. Treating such a
+ * 502 like a provider verdict removes a healthy account from rotation for the
+ * cooldown window and, with several connections, cascades through all of them —
+ * one unreachable route from the host empties the whole pool.
+ *
+ * Matched against the message text (what survives into `lastError`) and against
+ * the error object's own code/cause.
+ */
+export const TRANSPORT_ERROR_CODE_PATTERNS = [
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ECONNABORTED",
+  "ETIMEDOUT",
+  "EPIPE",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENETDOWN",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EAI_FAIL",
+];
+
+export const TRANSPORT_ERROR_TEXT_PATTERNS = [
+  "fetch failed",
+  "connect timeout",
+  "socket hang up",
+  "network is unreachable",
+  "err_connect_timeout",
+];
+
+/**
+ * Is this failure a transport-level error (never reached the provider)?
+ * Accepts an Error (preferred — checks `code`/`cause.code`) or a plain string
+ * (an already-serialized `lastError`).
+ * @param {Error|string|object|null} input
+ * @returns {boolean}
+ */
+export function isTransportError(input) {
+  if (input == null) return false;
+  if (typeof input === "object") {
+    const codes = [
+      input.code,
+      input.errno,
+      input.cause?.code,
+      input.cause?.cause?.code,
+    ];
+    if (codes.some((c) => typeof c === "string" && TRANSPORT_ERROR_CODE_PATTERNS.includes(c.toUpperCase()))) {
+      return true;
+    }
+    return isTransportError(`${input.message || ""} ${input.cause?.message || ""}`);
+  }
+  const text = String(input).toLowerCase();
+  if (TRANSPORT_ERROR_CODE_PATTERNS.some((p) => text.includes(p.toLowerCase()))) return true;
+  return TRANSPORT_ERROR_TEXT_PATTERNS.some((p) => text.includes(p.toLowerCase()));
+}

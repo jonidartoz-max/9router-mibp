@@ -99,6 +99,45 @@ async function tryGotScrapingFetch(url, options) {
 
 // DNS cache — use Map to avoid prototype pollution via malformed hostnames
 const DNS_CACHE = new Map();
+
+// ─── Direct-connection agent (explicit connect timeout) ────────────────────
+// undici's default Agent hardcodes a 10s connect timeout. That number is
+// invisible from the app and shorter than the router's own
+// FETCH_CONNECT_TIMEOUT_MS, so a host whose TCP handshake takes longer — a slow
+// or briefly filtered route, common from a cloud egress IP — dies inside undici
+// first. The failure then surfaces as `TypeError: fetch failed (cause:
+// UND_ERR_CONNECT_TIMEOUT ... timeout: 10000ms)` with a 10s value nobody
+// configured, which reads like a code bug rather than a network condition.
+// Pin the timeout explicitly so the router's own budget governs.
+//
+// `autoSelectFamily` (happy-eyeballs) keeps one dead address family (typically a
+// filtered IPv6 route) from consuming the whole connect budget before the
+// working family is tried. Env: CONNECT_TIMEOUT_MS.
+function envMsInt(name, def) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return def;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : def;
+}
+
+const DIRECT_CONNECT_TIMEOUT_MS = envMsInt("CONNECT_TIMEOUT_MS", 15 * 1000);
+
+let _directAgent = null;
+async function getDirectAgent() {
+  if (!_directAgent) {
+    const { Agent } = await import("undici");
+    _directAgent = new Agent({
+      connect: {
+        timeout: DIRECT_CONNECT_TIMEOUT_MS,
+        autoSelectFamily: true,
+        autoSelectFamilyAttemptTimeout: 1000,
+      },
+      keepAliveTimeout: 30 * 1000,
+      keepAliveMaxTimeout: 60 * 1000,
+    });
+  }
+  return _directAgent;
+}
 const TLS_CERT_ERRORS = new Set([
   "SELF_SIGNED_CERT_IN_CHAIN",
   "DEPTH_ZERO_SELF_SIGNED_CERT",
@@ -253,8 +292,8 @@ async function getDispatcher(proxyUrl, insecure = false) {
 
 async function fetchWithTlsFallback(url, options, proxyUrl) {
   try {
-    const dispatcher = proxyUrl ? await getDispatcher(proxyUrl) : undefined;
-    return await originalFetch(url, dispatcher ? { ...options, dispatcher } : options);
+    const dispatcher = proxyUrl ? await getDispatcher(proxyUrl) : await getDirectAgent();
+    return await originalFetch(url, { ...options, dispatcher });
   } catch (err) {
     const isStrictSsl = process.env.STRICT_SSL === "true" || process.env.STRICT_SSL === "1";
     if (!isStrictSsl && isTlsCertError(err)) {

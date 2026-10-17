@@ -1,4 +1,4 @@
-import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, DEFAULT_NETWORK_RETRY_BUDGET, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { shouldRefreshCredentials } from "../services/oauthCredentialManager.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
@@ -102,6 +102,14 @@ export class BaseExecutor {
     let lastError = null;
     let lastStatus = 0;
     const retryAttemptsByUrl = {};
+    // Transport failures get their own budget. The status ladder below is
+    // per-URL config (502: 3 attempts, 3s apart); letting a network error run
+    // through it as well multiplies an already-slow connect timeout, and the
+    // caller sees a ~50s 502 for what is really "this host cannot reach the
+    // provider right now". Cap the whole call so a dead route fails fast and
+    // visibly instead of grinding through the full ladder.
+    let networkAttempts = 0;
+    const networkRetryBudget = this.config?.networkRetryAttempts ?? DEFAULT_NETWORK_RETRY_BUDGET;
 
     // Merge default retry config with provider-specific config
     const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
@@ -166,13 +174,23 @@ export class BaseExecutor {
       } catch (error) {
         clearTimeout(connectTimer);
         lastError = error;
-        const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";
+        // Our own timer aborts with a reason, so `signal.aborted` is the reliable
+        // test: the rejection carries that reason (an Error named
+        // "ConnectTimeoutError"), not "AbortError". Keying off the name alone
+        // would reclassify our own timeout as a caller abort and skip the retry.
+        const isConnectTimeout = connectCtrl.signal.aborted;
         dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error.name}: ${error.message}${isConnectTimeout ? " (connect timeout)" : ""}`);
         // Connect timeout is internal — convert to retryable network error, don't propagate AbortError
         if (error.name === "AbortError" && !isConnectTimeout) throw error;
 
-        // Map network/fetch exceptions to 502 retry config
-        if (await tryRetry(urlIndex, HTTP_STATUS.BAD_GATEWAY, `network "${error.message}"`)) { urlIndex--; continue; }
+        // Map network/fetch exceptions to the 502 retry config, but stay inside the
+        // transport budget so a dead route cannot stack the whole status ladder.
+        if (networkAttempts < networkRetryBudget) {
+          networkAttempts++;
+          if (await tryRetry(urlIndex, HTTP_STATUS.BAD_GATEWAY, `network "${error.message}"`)) { urlIndex--; continue; }
+        } else {
+          log?.debug?.("RETRY", `network budget (${networkRetryBudget}) exhausted — not retrying ${url}`);
+        }
 
         if (urlIndex + 1 < fallbackCount) {
           log?.debug?.("RETRY", `Error on ${url}, trying fallback ${urlIndex + 1}`);
