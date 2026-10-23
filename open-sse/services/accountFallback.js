@@ -1,6 +1,21 @@
 import { ERROR_RULES, BACKOFF_CONFIG, TRANSIENT_COOLDOWN_MS, isTransportError } from "../config/errorConfig.js";
 
 /**
+ * Result flag for a fallback decision.
+ *
+ * `accountScoped` — the error condemns the whole credential, not one model, so
+ * the cooldown must be keyed on the account rather than on a single model.
+ *
+ * Emitted only when true: callers (and tests) compare these objects with deep
+ * equality, and adding always-present `false` fields silently breaks that
+ * contract for every existing branch.
+ */
+function ruleFlags(rule) {
+  return rule.accountScoped ? { accountScoped: true } : {};
+}
+
+
+/**
  * Calculate exponential backoff cooldown for rate limits (429)
  * Level 1: 1s, Level 2: 2s, Level 3: 4s... → max 4 min
  * @param {number} backoffLevel - Current backoff level
@@ -40,18 +55,34 @@ export function checkFallbackError(status, errorText, backoffLevel = 0, provider
     if (rule.text && lowerError && lowerError.includes(rule.text)) {
       if (rule.backoff) {
         const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
-        return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel };
+        return {
+          shouldFallback: true,
+          cooldownMs: getQuotaCooldown(newLevel),
+          newBackoffLevel: newLevel,
+        };
       }
-      return { shouldFallback: true, cooldownMs: rule.cooldownMs };
+      return {
+        shouldFallback: true,
+        cooldownMs: rule.cooldownMs,
+        ...ruleFlags(rule),
+      };
     }
 
     // Status-based rule: match HTTP status code
     if (rule.status && rule.status === status) {
       if (rule.backoff) {
         const newLevel = Math.min(backoffLevel + 1, BACKOFF_CONFIG.maxLevel);
-        return { shouldFallback: true, cooldownMs: getQuotaCooldown(newLevel), newBackoffLevel: newLevel };
+        return {
+          shouldFallback: true,
+          cooldownMs: getQuotaCooldown(newLevel),
+          newBackoffLevel: newLevel,
+        };
       }
-      return { shouldFallback: true, cooldownMs: rule.cooldownMs };
+      return {
+        shouldFallback: true,
+        cooldownMs: rule.cooldownMs,
+        ...ruleFlags(rule),
+      };
     }
   }
 
@@ -132,6 +163,10 @@ export const MODEL_LOCK_PREFIX = "modelLock_";
 /** Special key used when no model is known (account-level lock) */
 export const MODEL_LOCK_ALL = `${MODEL_LOCK_PREFIX}__all`;
 
+/** Alias used for account-wide bars (restriction/ban); same field as MODEL_LOCK_ALL. */
+export const ACCOUNT_LOCK_KEY = MODEL_LOCK_ALL;
+
+
 /** Build the flat field key for a model lock */
 export function getModelLockKey(model) {
   return model ? `${MODEL_LOCK_PREFIX}${model}` : MODEL_LOCK_ALL;
@@ -168,8 +203,12 @@ export function getEarliestModelLockUntil(connection) {
 /**
  * Build update object to set a model lock on a connection.
  */
-export function buildModelLockUpdate(model, cooldownMs) {
-  const key = getModelLockKey(model);
+export function buildModelLockUpdate(model, cooldownMs, accountScoped = false) {
+  // An account-wide bar (policy restriction / ban) is not a per-model quota:
+  // locking only the model that happened to be requested leaves every other
+  // model on the same dead credential looking available, so each new model
+  // re-runs the whole failing cycle. Lock the account key instead.
+  const key = accountScoped ? ACCOUNT_LOCK_KEY : getModelLockKey(model);
   return { [key]: new Date(Date.now() + cooldownMs).toISOString() };
 }
 

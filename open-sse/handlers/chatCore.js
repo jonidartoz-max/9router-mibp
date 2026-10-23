@@ -429,8 +429,35 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
   }
 
+  // Peek at the error body BEFORE deciding to refresh.
+  //
+  // A 403 is not automatically an expired token. Providers also answer 403 when
+  // the ACCOUNT itself is barred (policy restriction / ban), and no refresh can
+  // clear that: the refresh endpoint succeeds, the retried call fails with the
+  // same 403, and the router burns three refresh round-trips plus a retry on
+  // every single request while the pool still looks "almost working". Ask the
+  // executor's parseError() — it knows the provider's own error codes — and skip
+  // the refresh entirely when it reports the credential as restricted.
+  //
+  // The peek reads a CLONE: parseUpstreamError() consumes the real body later,
+  // so probing the original would leave the real parser with nothing.
+  let accountRestricted = false;
+  if (!executor.noAuth
+      && (providerResponse.status === HTTP_STATUS.UNAUTHORIZED || providerResponse.status === HTTP_STATUS.FORBIDDEN)) {
+    try {
+      const early = await parseUpstreamError(providerResponse.clone(), executor);
+      accountRestricted = early?.accountRestricted === true;
+      if (accountRestricted && log?.warn) {
+        log.warn("TOKEN", `${provider.toUpperCase()} | account restricted — skipping token refresh`);
+      }
+    } catch {
+      accountRestricted = false;
+    }
+  }
+
   // Handle 401/403 - try token refresh (skip for noAuth providers)
-  if (!executor.noAuth && (providerResponse.status === HTTP_STATUS.UNAUTHORIZED || providerResponse.status === HTTP_STATUS.FORBIDDEN)) {
+  if (!executor.noAuth && !accountRestricted
+      && (providerResponse.status === HTTP_STATUS.UNAUTHORIZED || providerResponse.status === HTTP_STATUS.FORBIDDEN)) {
     try {
       // Mutate credentials after each successful refresh: rotating refresh_token
       // providers (xAI/grok-cli) issue a new RT on every refresh; without this,

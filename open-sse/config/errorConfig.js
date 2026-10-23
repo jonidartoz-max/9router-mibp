@@ -47,6 +47,19 @@ const COOLDOWN = {
   short: 5 * 1000,
 };
 
+// A provider has permanently barred the account (policy restriction, ban, ToS
+// strike). No retry and no token refresh can clear it — only the operator
+// re-authenticating or replacing the credential. Cooling it for the generic
+// 2-minute window makes the router hammer a dead account over and over: every
+// request re-refreshes its token, re-fails, and the pool reports a bogus
+// "reset after 2m" that implies recovery is coming. Park it long enough that
+// the operator has to look, and keep it out of the rotation.
+const COOLDOWN_RESTRICTED = 24 * 60 * 60 * 1000;
+
+/** Exported so callers can recognise a permanent bar without re-deriving it. */
+export const RESTRICTED_COOLDOWN_MS = COOLDOWN_RESTRICTED;
+
+
 /**
  * Unified error classification rules.
  * Checked top-to-bottom: text rules first (by order), then status rules.
@@ -57,8 +70,24 @@ const COOLDOWN = {
  *   - backoff: true = use exponential backoff (rate limit)
  */
 export const ERROR_RULES = [
+  // --- Permanent account bars (checked before every transient rule) ---
+  // These say "this credential is finished", not "wait a moment". They must
+  // outrank the rate-limit wording below: a restriction notice often also
+  // contains words like "limit", so without these rules it would match
+  // "rate limit", get a 2-minute backoff, be retried, and fail identically
+  // forever — the exact loop that made a restricted CodeBuddy pool retry
+  // every account on every request.
+  { text: "account restricted",          cooldownMs: COOLDOWN_RESTRICTED, noRefresh: true, accountScoped: true },
+  { text: "account has been restricted", cooldownMs: COOLDOWN_RESTRICTED, noRefresh: true, accountScoped: true },
+  { text: "unusual activity",            cooldownMs: COOLDOWN_RESTRICTED, noRefresh: true, accountScoped: true },
+  { text: "account is suspended",        cooldownMs: COOLDOWN_RESTRICTED, noRefresh: true, accountScoped: true },
+  { text: "account has been banned",     cooldownMs: COOLDOWN_RESTRICTED, noRefresh: true, accountScoped: true },
+  { text: "account banned",              cooldownMs: COOLDOWN_RESTRICTED, noRefresh: true, accountScoped: true },
+  { text: "violation of terms",          cooldownMs: COOLDOWN_RESTRICTED, noRefresh: true, accountScoped: true },
+
   // --- Text-based rules (checked first, order = priority) ---
   { provider: "codex", text: "model is not supported when using codex with a chatgpt account", cooldownMs: MAX_RATE_LIMIT_COOLDOWN_MS },
+
   { text: "no credentials",           cooldownMs: COOLDOWN.long },
   { text: "request not allowed",      cooldownMs: COOLDOWN.short },
   { text: "improperly formed request", cooldownMs: COOLDOWN.long },

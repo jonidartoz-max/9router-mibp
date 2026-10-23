@@ -70,7 +70,17 @@ export async function parseUpstreamError(response, executor = null) {
       const parsed = executor.parseError(response, bodyText);
       if (parsed && typeof parsed === "object") {
         const msg = parsed.message || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
-        return { statusCode: parsed.status || response.status, message: msg, resetsAtMs: parsed.resetsAtMs };
+        return {
+          statusCode: parsed.status || response.status,
+          message: msg,
+          resetsAtMs: parsed.resetsAtMs,
+          // Pass through the executor's own verdict instead of dropping it.
+          // `accountRestricted` is a provider saying "this credential is
+          // barred, do not refresh or retry it" — discarding the flag here is
+          // what forced the caller to treat a permanent ban as a plain 403 and
+          // spend three token-refresh round-trips per request rediscovering it.
+          accountRestricted: parsed.accountRestricted === true,
+        };
       }
     } catch { /* fall through to default parsing */ }
   }
@@ -86,7 +96,7 @@ export async function parseUpstreamError(response, executor = null) {
   const messageStr = typeof message === "string" ? message : JSON.stringify(message);
   const finalMessage = messageStr || DEFAULT_ERROR_MESSAGES[response.status] || `Upstream error: ${response.status}`;
 
-  return { statusCode: response.status, message: finalMessage };
+  return { statusCode: response.status, message: finalMessage, accountRestricted: false };
 }
 
 /**

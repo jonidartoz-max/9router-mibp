@@ -252,11 +252,12 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
 
   // Provider-specific precise cooldown (e.g. codex usage_limit_reached resets_at) overrides backoff
-  let shouldFallback, cooldownMs, newBackoffLevel;
+  let shouldFallback, cooldownMs, newBackoffLevel, accountScoped;
   if (githubResetAtMs) {
     shouldFallback = true;
     cooldownMs = githubResetAtMs - Date.now();
     newBackoffLevel = 0;
+    accountScoped = false;
   } else if (resetsAtMs && resetsAtMs > Date.now()) {
     shouldFallback = true;
     // Antigravity quota API provides exact per-model resetAt. Do not truncate it.
@@ -264,13 +265,18 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
       ? resetsAtMs - Date.now()
       : Math.min(resetsAtMs - Date.now(), MAX_RATE_LIMIT_COOLDOWN_MS);
     newBackoffLevel = 0;
+    accountScoped = false;
   } else {
-    ({ shouldFallback, cooldownMs, newBackoffLevel } = checkFallbackError(status, errorText, backoffLevel, resolveProviderId(provider)));
+    ({
+      shouldFallback, cooldownMs, newBackoffLevel, accountScoped = false,
+    } = checkFallbackError(status, errorText, backoffLevel, resolveProviderId(provider)));
   }
   if (!shouldFallback) return { shouldFallback: false, cooldownMs: 0 };
 
   const reason = typeof errorText === "string" ? errorText.slice(0, 200) : "Provider error";
-  const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs);
+  // `accountScoped` errors (restriction / ban) lock the whole credential rather
+  // than one model, and ignore the per-model resetAt path above.
+  const lockUpdate = buildModelLockUpdate(githubResetAtMs ? null : model, cooldownMs, accountScoped === true);
 
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
